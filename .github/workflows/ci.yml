@@ -79,9 +79,11 @@ jobs:
 
   image-build:
     name: Container image builds
-    # On pull requests only: catches Dockerfile breakage before merge. Pushes
-    # to main build (and push) the image in the deploy job instead.
-    if: github.event_name == 'pull_request'
+    # Runs on every pull request and push, before any approval, so a broken
+    # Dockerfile fails here instead of after someone approves a deploy. It
+    # has no GCP credentials and pushes nothing: the approved deploy job
+    # rebuilds and pushes, reusing this job's layer cache (so that rebuild
+    # is mostly cache hits for the same commit).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,10 +99,11 @@ jobs:
           provenance: false
           build-args: GIT_SHA=${{ github.sha }}
           cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy-dev:
     name: Deploy to dev
-    needs: [backend, frontend]
+    needs: [backend, frontend, image-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
