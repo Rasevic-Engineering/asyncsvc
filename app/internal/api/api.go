@@ -43,6 +43,10 @@ type Server struct {
 	WebDir string
 	// Web is the public config the React app loads from /config.json.
 	Web WebConfig
+	// FirebaseHandlerHost, if set (e.g. my-project.firebaseapp.com), makes
+	// the API proxy Firebase's /__/auth/ sign-in helper, so Web.Firebase.
+	// AuthDomain can be this app's own domain.
+	FirebaseHandlerHost string
 }
 
 // WebConfig is served to the browser, so it must contain only public values.
@@ -77,6 +81,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/reports", user(s.listReports))
 	mux.HandleFunc("GET /v1/reports/{id}", user(s.getReport))
 	mux.HandleFunc("POST /v1/events", admin(s.ingestEvents))
+
+	if s.FirebaseHandlerHost != "" {
+		// Explicit methods: a method-less pattern would conflict with "GET /".
+		proxy := firebaseAuthProxy(s.FirebaseHandlerHost)
+		mux.Handle("GET /__/auth/", proxy)
+		mux.Handle("POST /__/auth/", proxy) // some identity providers post back
+		mux.Handle("GET /__/firebase/", proxy)
+	}
 
 	// Local file store only: serves its HMAC-signed download links.
 	if h, ok := s.Store.(http.Handler); ok {

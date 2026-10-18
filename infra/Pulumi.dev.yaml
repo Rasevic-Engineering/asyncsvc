@@ -9,3 +9,6 @@ config:
   asyncsvc:githubEnvironment: dev
   asyncsvc:githubBranch: main
   asyncsvc:customDomain: asyncsvc.rasevicengineering.com
+  asyncsvc:mailFrom: reports@rasevicengineering.com
+  asyncsvc:sendgridApiKey:
+    secure: v1:IevpPrro1kOQbEhe:0hcTeAEtVgAN0Ki7U86ZWLOUiErGVcG5aznEiJlxbzjgvICETDZUB/4rl+k4wHJ2gU43rjnzmlT5Xp/viZqdbTL41OhpoaSBr172cRev0KH+aLLxBA==

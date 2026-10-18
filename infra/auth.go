@@ -110,12 +110,24 @@ type envVar struct {
 }
 
 // apiAuthEnv is the API's auth configuration, shared by both platforms.
+//
+// With a custom domain, the web app uses that domain as its Firebase
+// authDomain and the API proxies /__/auth/ to <project>.firebaseapp.com, so
+// Google sign-in stays on the app's own site (needed for browsers that block
+// third-party storage). The OAuth redirect URI is then
+// https://<customDomain>/__/auth/handler.
 func (s *shared) apiAuthEnv() []envVar {
-	return []envVar{
+	env := []envVar{
 		{"FIREBASE_PROJECT_ID", pulumi.String(s.project)},
 		{"ADMIN_EMAILS", pulumi.String(s.adminEmails)},
 		{"WEB_FIREBASE_API_KEY", s.fb.apiKey},
-		{"WEB_FIREBASE_AUTH_DOMAIN", s.fb.authDomain},
 		{"WEB_GOOGLE_SIGN_IN", pulumi.String(strconv.FormatBool(s.useGoogleSignIn))},
 	}
+	if s.customDomain != "" {
+		return append(env,
+			envVar{"WEB_FIREBASE_AUTH_DOMAIN", pulumi.String(s.customDomain)},
+			envVar{"FIREBASE_AUTH_HANDLER_HOST", s.fb.authDomain},
+		)
+	}
+	return append(env, envVar{"WEB_FIREBASE_AUTH_DOMAIN", s.fb.authDomain})
 }

@@ -67,16 +67,17 @@ func run() error {
 	web.GoogleSignIn = cfg.WebGoogleSignIn
 
 	srv := &api.Server{
-		Pool:         pool,
-		Reports:      &reports.Repo{Pool: pool},
-		Relay:        &outbox.Relay{Pool: pool, Pub: pub},
-		Pub:          pub,
-		Store:        store,
-		TopicReports: cfg.TopicReports,
-		TopicEvents:  cfg.TopicEvents,
-		WebDir:       cfg.WebDir,
-		Auth:         verifier,
-		Web:          web,
+		Pool:                pool,
+		Reports:             &reports.Repo{Pool: pool},
+		Relay:               &outbox.Relay{Pool: pool, Pub: pub},
+		Pub:                 pub,
+		Store:               store,
+		TopicReports:        cfg.TopicReports,
+		TopicEvents:         cfg.TopicEvents,
+		WebDir:              cfg.WebDir,
+		Auth:                verifier,
+		Web:                 web,
+		FirebaseHandlerHost: cfg.FirebaseHandlerHost,
 	}
 	return httpx.Serve(ctx, ":"+cfg.Port, srv.Routes())
 }
