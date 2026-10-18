@@ -18,7 +18,16 @@ A Go REST service that keeps slow work off the request path, a Next.js frontend 
 - Requests without a valid token get `401`. A user asking for someone else's report gets `404` (not `403`), so report IDs can't be probed.
 - The API checks the token's signature, expiry, issuer and audience (your project). It doesn't check revocation on every request; tokens expire after an hour.
 - Downloads use short-lived signed URLs: GCS V4 signed URLs in the cloud, HMAC-signed `/files/...` links locally. The browser can download without sending the token.
-- To make someone an admin without listing their email, set a custom claim with the Firebase Admin SDK, e.g. `auth.SetCustomUserClaims(ctx, uid, map[string]any{"admin": true})`. It applies the next time their token refreshes.
+- **Grant and revoke admin with `adminctl`** (sets the `admin` custom claim; uses your gcloud credentials):
+
+  ```bash
+  make admin-grant  EMAIL=someone@example.com   # applies when their sign-in refreshes (≤1h, or on next sign-in)
+  make admin-revoke EMAIL=someone@example.com   # immediate: signs them out everywhere
+  make admin-list                               # admins via claim and via adminEmails
+  make admin-show   EMAIL=someone@example.com
+  ```
+
+  Revocation is immediate because the API re-checks tokens that carry the admin claim (one Firebase lookup, on admin requests only). Admins from `adminEmails` can't be revoked this way: remove them from that config and redeploy. Locally, run `adminctl` with `FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 GCP_PROJECT=demo-asyncsvc`.
 - The page's Content-Security-Policy allows only this origin plus Firebase's auth endpoints. Next's inline scripts are allowed by SHA-256 hash, computed when the API starts, not by `'unsafe-inline'`.
 
 ## Platforms

@@ -1,4 +1,4 @@
-.PHONY: image release state-bootstrap test test-integration web-install web-dev web-build dev dev-down deploy destroy
+.PHONY: admin-grant admin-revoke admin-list admin-show image release state-bootstrap test test-integration web-install web-dev web-build dev dev-down deploy destroy
 
 test:
 	cd app && go vet ./... && go test ./...
@@ -26,6 +26,31 @@ dev:
 
 dev-down:
 	cd app && docker compose down -v
+
+# Admin role management (Firebase custom claim). Uses your gcloud
+# application-default credentials and the stack's project and adminEmails.
+#   make admin-grant EMAIL=someone@example.com
+#   make admin-revoke EMAIL=someone@example.com
+#   make admin-list
+#   make admin-show EMAIL=someone@example.com
+ADMINCTL = cd app && GCP_PROJECT=$(STACK_PROJECT) \
+	ADMIN_EMAILS="$$(cd ../infra && pulumi config get adminEmails 2>/dev/null)" \
+	go run ./cmd/adminctl
+
+admin-grant:
+	@test -n "$(EMAIL)" || (echo "usage: make admin-grant EMAIL=someone@example.com" && exit 1)
+	$(ADMINCTL) grant $(EMAIL)
+
+admin-revoke:
+	@test -n "$(EMAIL)" || (echo "usage: make admin-revoke EMAIL=someone@example.com" && exit 1)
+	$(ADMINCTL) revoke $(EMAIL)
+
+admin-list:
+	$(ADMINCTL) list
+
+admin-show:
+	@test -n "$(EMAIL)" || (echo "usage: make admin-show EMAIL=someone@example.com" && exit 1)
+	$(ADMINCTL) show $(EMAIL)
 
 # One-time: create the GCS bucket for Pulumi state and log in to it.
 #   make state-bootstrap PROJECT=my-project [REGION=us-central1]

@@ -68,17 +68,24 @@ func NewFirebase(ctx context.Context, projectID string, adminEmails []string, tr
 
 func (f *Firebase) Verify(ctx context.Context, raw string) (User, error) {
 	// Signature, expiry, issuer and audience (the project) are all checked.
-	// Revocation isn't (that's an RPC per request); tokens live one hour.
 	t, err := f.client.VerifyIDToken(ctx, raw)
 	if err != nil {
 		return User{}, err
+	}
+	// Tokens carrying the admin claim are also checked for revocation, so
+	// `adminctl revoke` takes effect immediately rather than when the
+	// token expires (up to an hour). It's one lookup, on admin requests
+	// only; regular users' tokens aren't checked.
+	if HasAdminClaim(t.Claims) {
+		if t, err = f.client.VerifyIDTokenAndCheckRevoked(ctx, raw); err != nil {
+			return User{}, err
+		}
 	}
 	u := User{UID: t.UID}
 	u.Email, _ = t.Claims["email"].(string)
 	verified, _ := t.Claims["email_verified"].(bool)
 	u.EmailVerified = verified || (f.trustUnverified && u.Email != "")
-	isAdminClaim, _ := t.Claims["admin"].(bool)
-	u.Admin = isAdminClaim || (u.EmailVerified && f.adminEmails[strings.ToLower(u.Email)])
+	u.Admin = HasAdminClaim(t.Claims) || (u.EmailVerified && f.adminEmails[strings.ToLower(u.Email)])
 	return u, nil
 }
 

@@ -249,6 +249,8 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 		member     pulumi.StringInput
 	}{
 		{"api-sql", "roles/cloudsql.client", s.apiMember},
+		// Revocation checks on admin tokens look the user up in Firebase Auth.
+		{"api-firebaseauth-viewer", "roles/firebaseauth.viewer", s.apiMember},
 		{"worker-sql", "roles/cloudsql.client", s.workerMember},
 		{"worker-bq-job", "roles/bigquery.jobUser", s.workerMember},
 		{"worker-bq-read-session", "roles/bigquery.readSessionUser", s.workerMember},
