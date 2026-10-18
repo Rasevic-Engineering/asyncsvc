@@ -15,9 +15,12 @@ WORKDIR /src
 COPY app/go.mod app/go.sum ./
 RUN go mod download
 COPY app/ ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/devsetup ./cmd/devsetup \
+# Git commit baked into the binaries, reported by GET /version.
+ARG GIT_SHA=dev
+RUN LDFLAGS="-s -w -X github.com/example/asyncsvc/internal/version.Commit=${GIT_SHA}" \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/api ./cmd/api \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/worker ./cmd/worker \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/devsetup ./cmd/devsetup \
  && mkdir -p /data/reports
 
 FROM gcr.io/distroless/static-debian12:nonroot

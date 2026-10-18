@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { authErrorMessage, useAuth } from "@/lib/auth";
+import { safeNext } from "@/lib/nav";
 
 export default function LoginPage() {
   const { status, config, error: loadError, signIn, signUp, signInWithGoogle } = useAuth();
@@ -14,7 +15,9 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (status === "signedIn") router.replace("/");
+    if (status === "signedIn") {
+      router.replace(safeNext(new URLSearchParams(window.location.search).get("next")));
+    }
   }, [status, router]);
 
   async function run(action: () => Promise<void>) {

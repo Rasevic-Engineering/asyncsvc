@@ -41,6 +41,7 @@ STACK_PROJECT = $(shell cd infra && pulumi config get gcp:project 2>/dev/null)
 STACK_REGION  = $(or $(shell cd infra && pulumi config get gcp:region 2>/dev/null),us-central1)
 REGISTRY      = $(STACK_REGION)-docker.pkg.dev
 IMAGE_REPO    = $(REGISTRY)/$(STACK_PROJECT)/asyncsvc/app
+GIT_SHA       = $(shell git rev-parse HEAD 2>/dev/null || echo unknown)$(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
 IMAGE_TAG    ?= $(shell date -u +%Y%m%d-%H%M%S)
 IMAGE_META    = /tmp/asyncsvc-image-metadata.json
 IMAGE_DIGEST  = python3 -c 'import json; print(json.load(open("$(IMAGE_META)"))["containerimage.digest"])'
@@ -48,7 +49,8 @@ IMAGE_DIGEST  = python3 -c 'import json; print(json.load(open("$(IMAGE_META)"))[
 image:
 	@test -n "$(STACK_PROJECT)" || (echo "Set gcp:project on the Pulumi stack first (cd infra && pulumi config set gcp:project ...)" && exit 1)
 	gcloud auth configure-docker $(REGISTRY) --quiet
-	docker buildx build --platform linux/amd64 \
+	docker buildx build --platform linux/amd64 --provenance=false \
+		--build-arg GIT_SHA=$(GIT_SHA) \
 		-t $(IMAGE_REPO):$(IMAGE_TAG) \
 		--metadata-file $(IMAGE_META) --push .
 	@echo "Pushed $(IMAGE_REPO)@$$($(IMAGE_DIGEST))"

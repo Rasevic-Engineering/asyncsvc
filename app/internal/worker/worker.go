@@ -23,12 +23,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/example/asyncsvc/internal/blob"
+	"github.com/example/asyncsvc/internal/export"
 	"github.com/example/asyncsvc/internal/httpx"
 	"github.com/example/asyncsvc/internal/mail"
 	"github.com/example/asyncsvc/internal/messages"
 	"github.com/example/asyncsvc/internal/outbox"
 	"github.com/example/asyncsvc/internal/pubsubx"
 	"github.com/example/asyncsvc/internal/reports"
+	"github.com/example/asyncsvc/internal/version"
 )
 
 type Worker struct {
@@ -55,6 +57,7 @@ func (wk *Worker) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", httpx.Health)
 	mux.HandleFunc("GET /healthz", httpx.Health)
+	mux.HandleFunc("GET /version", version.Handler)
 	mux.HandleFunc("POST /pubsub/reports", wk.push(wk.Handle(wk.HandleReport)))
 	mux.HandleFunc("POST /pubsub/emails", wk.push(wk.Handle(wk.HandleEmail)))
 	mux.HandleFunc("POST /tasks/relay-outbox", wk.relayOutbox)
@@ -138,10 +141,14 @@ func (wk *Worker) HandleReport(ctx context.Context, d pubsubx.Delivery) error {
 		rows = n
 		return err
 	})
+	var formats []string
+	if err == nil {
+		formats, err = wk.renderFormats(genCtx, rep, key, rows)
+	}
 
 	switch {
 	case err == nil:
-		return wk.finish(ctx, rep, key, rows)
+		return wk.finish(ctx, rep, key, rows, formats)
 
 	case errors.Is(err, reports.ErrInvalid):
 		log.WarnContext(ctx, "report request invalid; failing permanently", "err", err)
@@ -163,14 +170,60 @@ func (wk *Worker) HandleReport(ctx context.Context, d pubsubx.Delivery) error {
 }
 
 // finish marks the report ready and queues the notification email atomically.
-func (wk *Worker) finish(ctx context.Context, rep reports.Report, key string, rows int64) error {
+// renderers turn the report's CSV into the other download formats.
+var renderers = map[string]func(io.Reader, io.Writer, export.Meta) error{
+	"xlsx": export.XLSX,
+	"pdf":  export.PDF,
+}
+
+// renderFormats writes the Excel and PDF versions next to the CSV, reading
+// the CSV back from storage. A failure here fails the whole attempt (it's
+// retried), so a report is never "ready" with a missing download.
+func (wk *Worker) renderFormats(ctx context.Context, rep reports.Report, csvKey string, rows int64) ([]string, error) {
+	through := rep.Params.To
+	if t, err := time.Parse("2006-01-02", rep.Params.To); err == nil {
+		through = t.AddDate(0, 0, -1).Format("2006-01-02") // to is exclusive
+	}
+	title := reports.KindLabels[rep.Kind]
+	if title == "" {
+		title = rep.Kind
+	}
+	meta := export.Meta{
+		Title:     title,
+		Subtitle:  fmt.Sprintf("%s – %s (UTC) · %d rows", rep.Params.From, through, rows),
+		Generated: time.Now(),
+	}
+
+	formats := []string{"csv"}
+	for _, f := range reports.Formats {
+		render, ok := renderers[f.Ext]
+		if !ok {
+			continue
+		}
+		err := wk.Store.Put(ctx, reports.FormatKey(csvKey, f.Ext), f.ContentType, func(w io.Writer) error {
+			src, err := wk.Store.Open(ctx, csvKey)
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			return render(src, w, meta)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render %s: %w", f.Ext, err)
+		}
+		formats = append(formats, f.Ext)
+	}
+	return formats, nil
+}
+
+func (wk *Worker) finish(ctx context.Context, rep reports.Report, key string, rows int64, formats []string) error {
 	tx, err := wk.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if err := wk.Reports.MarkReady(ctx, tx, rep.ID, key, rows); err != nil {
+	if err := wk.Reports.MarkReady(ctx, tx, rep.ID, key, rows, formats); err != nil {
 		return err
 	}
 	var ids []uuid.UUID
@@ -181,7 +234,9 @@ func (wk *Worker) finish(ctx context.Context, rep reports.Report, key string, ro
 			Data: map[string]string{
 				"kind": rep.Kind, "from": rep.Params.From, "to": rep.Params.To,
 				"rows": strconv.FormatInt(rows, 10),
-				"url":  wk.PublicAPIURL + "/v1/reports/" + rep.ID.String(),
+				// Opens the report in the web app (which handles sign-in), not
+				// the JSON API, which needs a bearer token a browser link can't send.
+				"url": wk.PublicAPIURL + "/?report=" + rep.ID.String(),
 			},
 		}, nil)
 		if err != nil {

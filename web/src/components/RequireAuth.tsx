@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { useAuth } from "@/lib/auth";
+import { currentPath } from "@/lib/nav";
 
 // Client-side gate for the static export. The API enforces auth on every
 // request regardless; this only decides what to render.
@@ -11,7 +12,11 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
-    if (status === "signedOut") router.replace("/login");
+    // Remember where the user was going (e.g. a report link from an email).
+    if (status === "signedOut") {
+      const here = currentPath();
+      router.replace(here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`);
+    }
   }, [status, router]);
 
   if (status === "error") {

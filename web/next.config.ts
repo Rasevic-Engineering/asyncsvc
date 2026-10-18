@@ -13,7 +13,7 @@ const config: NextConfig = {
   poweredByHeader: false,
   ...(isDev && {
     async rewrites() {
-      return ["/v1/:path*", "/config.json", "/files/:path*", "/health", "/healthz"].map((source) => ({
+      return ["/v1/:path*", "/config.json", "/files/:path*", "/health", "/healthz", "/version"].map((source) => ({
         source,
         destination: `${apiUrl}${source}`,
       }));

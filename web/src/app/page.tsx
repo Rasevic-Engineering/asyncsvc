@@ -4,11 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 import { EventsPanel } from "@/components/EventsPanel";
 import { Header } from "@/components/Header";
 import { ReportForm } from "@/components/ReportForm";
+import { ReportFocus } from "@/components/ReportFocus";
 import { ReportList } from "@/components/ReportList";
 import { RequireAuth } from "@/components/RequireAuth";
 import { VerifyEmailBanner } from "@/components/VerifyEmailBanner";
 import { api, type Report } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { clearReportParam, reportParam } from "@/lib/nav";
 import { usePolling } from "@/lib/usePolling";
 
 export default function DashboardPage() {
@@ -25,6 +27,16 @@ function Dashboard() {
   const [reports, setReports] = useState<Report[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
+
+  // Links from report emails open that report (?report=<id>).
+  useEffect(() => {
+    const id = reportParam();
+    if (id) {
+      setFocusId(id);
+      setHighlight(id);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -54,6 +66,16 @@ function Dashboard() {
     <div className="app">
       <Header />
       <VerifyEmailBanner />
+      {focusId && (
+        <ReportFocus
+          id={focusId}
+          onClose={() => {
+            setFocusId(null);
+            setHighlight(null);
+            clearReportParam();
+          }}
+        />
+      )}
       <main className="layout">
         <div className="stack">
           <ReportForm onCreated={onCreated} />

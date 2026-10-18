@@ -16,6 +16,10 @@ export interface Report {
   started_at?: string;
   completed_at?: string;
   owner_email?: string;
+  // Formats generated for this report (older reports: csv only).
+  formats?: string[];
+  // Only on GET /v1/reports/{id} once ready: signed links by format.
+  downloads?: Record<string, string>;
   // Only on GET /v1/reports/{id} once ready; valid for a few minutes.
   download_url?: string;
 }

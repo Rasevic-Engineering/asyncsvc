@@ -27,6 +27,8 @@ type Store interface {
 	Put(ctx context.Context, key, contentType string, write func(io.Writer) error) error
 	// URL returns a time-limited download URL.
 	URL(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// Open streams an object back.
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 func New(ctx context.Context, bucket, dir string) (Store, error) {
@@ -60,6 +62,10 @@ func (g *GCS) Put(ctx context.Context, key, contentType string, write func(io.Wr
 		return err
 	}
 	return w.Close()
+}
+
+func (g *GCS) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	return g.bucket.Object(key).NewReader(ctx)
 }
 
 // URL signs a V4 URL. On Cloud Run there is no private key, so the client
@@ -110,7 +116,17 @@ func (l *Local) Put(ctx context.Context, key, _ string, write func(io.Writer) er
 	return os.Rename(tmp.Name(), path)
 }
 
+func (l *Local) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	return os.Open(filepath.Join(l.Dir, filepath.FromSlash(key)))
+}
+
 const FilesPrefix = "/files/"
+
+var contentTypes = map[string]string{
+	".csv":  "text/csv",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".pdf":  "application/pdf",
+}
 
 func (l *Local) sign(key string, exp int64) string {
 	m := hmac.New(sha256.New, l.key)
@@ -140,7 +156,11 @@ func (l *Local) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	w.Header().Set("Content-Type", "text/csv")
+	ct := contentTypes[path.Ext(key)]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, path.Base(key)))
 	w.Header().Set("Cache-Control", "private, no-store")
 	_, _ = io.Copy(w, f)

@@ -170,6 +170,7 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 		k8sEnv("TOPIC_EMAILS", s.emailsTopic.Name),
 		k8sEnv("TOPIC_EVENTS", s.eventsTopic.Name),
 		k8sEnv("REPORTS_BUCKET", s.bucket.Name),
+		k8sEnv("IMAGE", s.image), // reported by GET /version
 	}
 
 	apiEnv := append(corev1.EnvVarArray{}, commonEnv...)

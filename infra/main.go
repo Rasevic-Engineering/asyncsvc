@@ -273,6 +273,27 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 		Location:     pulumi.String(st.region),
 		RepositoryId: pulumi.String(appName),
 		Format:       pulumi.String("DOCKER"),
+		// Every deploy pushes a new image. Keep the 20 newest (enough to roll
+		// back) and delete anything else once it's 30 days old. KEEP rules
+		// take precedence over DELETE rules.
+		CleanupPolicies: artifactregistry.RepositoryCleanupPolicyArray{
+			&artifactregistry.RepositoryCleanupPolicyArgs{
+				Id:     pulumi.String("keep-20-newest"),
+				Action: pulumi.String("KEEP"),
+				MostRecentVersions: &artifactregistry.RepositoryCleanupPolicyMostRecentVersionsArgs{
+					KeepCount: pulumi.Int(20),
+				},
+			},
+			&artifactregistry.RepositoryCleanupPolicyArgs{
+				Id:     pulumi.String("delete-older-than-30d"),
+				Action: pulumi.String("DELETE"),
+				Condition: &artifactregistry.RepositoryCleanupPolicyConditionArgs{
+					TagState:  pulumi.String("ANY"),
+					OlderThan: pulumi.String("2592000s"),
+				},
+			},
+		},
+		CleanupPolicyDryRun: pulumi.Bool(false),
 	}, afterAPIs)
 	if err != nil {
 		return nil, err

@@ -552,3 +552,38 @@ button.link {
   background: var(--accent);
   color: var(--accent-text);
 }
+
+/* ---- Report opened from a link ------------------------------------------ */
+
+.focus {
+  margin-bottom: 20px;
+  border-color: var(--accent);
+}
+
+.focus-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.focus-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---- Download format buttons ------------------------------------------- */
+
+.downloads {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.downloads button {
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}

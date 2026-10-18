@@ -39,6 +39,7 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		runEnv("TOPIC_EMAILS", s.emailsTopic.Name),
 		runEnv("TOPIC_EVENTS", s.eventsTopic.Name),
 		runEnv("REPORTS_BUCKET", s.bucket.Name),
+		runEnv("IMAGE", s.image), // reported by GET /version
 	}
 	// Cloud Run's built-in Cloud SQL integration: a unix socket under /cloudsql.
 	volumes := cloudrunv2.ServiceTemplateVolumeArray{

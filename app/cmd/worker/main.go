@@ -25,6 +25,7 @@ import (
 	"github.com/example/asyncsvc/internal/outbox"
 	"github.com/example/asyncsvc/internal/pubsubx"
 	"github.com/example/asyncsvc/internal/reports"
+	"github.com/example/asyncsvc/internal/version"
 	"github.com/example/asyncsvc/internal/worker"
 )
 
@@ -39,6 +40,9 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	v := version.Get()
+	slog.Info("starting", "commit", v.Commit, "image", v.Image)
 
 	cfg, err := config.Load()
 	if err != nil {

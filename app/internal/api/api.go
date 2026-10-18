@@ -28,6 +28,7 @@ import (
 	"github.com/example/asyncsvc/internal/messages"
 	"github.com/example/asyncsvc/internal/outbox"
 	"github.com/example/asyncsvc/internal/reports"
+	"github.com/example/asyncsvc/internal/version"
 )
 
 type Server struct {
@@ -70,6 +71,7 @@ func (s *Server) Routes() http.Handler {
 	// Public.
 	mux.HandleFunc("GET /health", httpx.Health)
 	mux.HandleFunc("GET /healthz", httpx.Health)
+	mux.HandleFunc("GET /version", version.Handler)
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		httpx.JSON(w, http.StatusOK, s.Web)
@@ -205,8 +207,10 @@ func (s *Server) listReports(w http.ResponseWriter, r *http.Request) {
 
 type reportResp struct {
 	reports.Report
-	// Short-lived link that works without an Authorization header.
-	DownloadURL string `json:"download_url,omitempty"`
+	// Short-lived links that work without an Authorization header, keyed by
+	// format (csv, xlsx, pdf). DownloadURL is the CSV, kept for older clients.
+	DownloadURL string            `json:"download_url,omitempty"`
+	Downloads   map[string]string `json:"downloads,omitempty"`
 }
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
@@ -230,12 +234,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 
 	resp := reportResp{Report: rep}
 	if rep.Status == reports.StatusReady && rep.FileKey != nil {
-		url, err := s.Store.URL(r.Context(), *rep.FileKey, 5*time.Minute)
-		if err != nil {
-			s.fail(w, r, err)
-			return
+		resp.Downloads = map[string]string{}
+		for _, f := range rep.Formats {
+			url, err := s.Store.URL(r.Context(), reports.FormatKey(*rep.FileKey, f), 5*time.Minute)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			resp.Downloads[f] = url
 		}
-		resp.DownloadURL = url
+		resp.DownloadURL = resp.Downloads["csv"]
 	} else if rep.Status == reports.StatusPending || rep.Status == reports.StatusRunning {
 		w.Header().Set("Retry-After", "5")
 	}

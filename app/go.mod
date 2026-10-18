@@ -7,9 +7,12 @@ require (
 	cloud.google.com/go/cloudsqlconn v1.25.3
 	cloud.google.com/go/pubsub/v2 v2.7.0
 	cloud.google.com/go/storage v1.69.0
+	firebase.google.com/go/v4 v4.22.0
 	github.com/fergusstrange/embedded-postgres v1.34.0
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/sync v0.24.0
 	google.golang.org/api v0.301.0
 	google.golang.org/grpc v1.84.0
@@ -27,7 +30,6 @@ require (
 	cloud.google.com/go/longrunning v1.2.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
 	cloud.google.com/go/sql v0.2.0 // indirect
-	firebase.google.com/go/v4 v4.22.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.35.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.57.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.57.0 // indirect
@@ -57,8 +59,13 @@ require (
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/pierrec/lz4/v4 v4.1.18 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
+	github.com/richardlehane/mscfb v1.0.7 // indirect
+	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
+	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
+	github.com/xuri/efp v0.0.1 // indirect
+	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

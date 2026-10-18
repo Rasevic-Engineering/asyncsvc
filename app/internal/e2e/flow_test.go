@@ -322,7 +322,7 @@ func TestEmailDedupe(t *testing.T) {
 	if e.mailer.count() != 1 {
 		t.Fatalf("want 1 email sent, got %d", e.mailer.count())
 	}
-	if s := e.mailer.sent[0]; s.To != "alice@example.com" || !strings.Contains(s.Text, "https://api.example.com/v1/reports/") {
+	if s := e.mailer.sent[0]; s.To != "alice@example.com" || !strings.Contains(s.Text, "https://api.example.com/?report=") {
 		t.Fatalf("email: %+v", s)
 	}
 }
@@ -467,6 +467,26 @@ func TestListAndDownload(t *testing.T) {
 		!strings.HasPrefix(string(body), "day,active_users,events") {
 		t.Fatalf("download: %d %v %q", resp.StatusCode, resp.Header, body)
 	}
+	// Excel and PDF versions are generated alongside the CSV.
+	rep := e.getReport(first["id"].(string))
+	if f, _ := json.Marshal(rep["formats"]); string(f) != `["csv","xlsx","pdf"]` {
+		t.Fatalf("formats = %s", f)
+	}
+	downloads := rep["downloads"].(map[string]any)
+	for format, want := range map[string]struct{ contentType, magic string }{
+		"csv":  {"text/csv", "day,"},
+		"xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "PK"}, // zip container
+		"pdf":  {"application/pdf", "%PDF-"},
+	} {
+		resp, body := e.call("GET", downloads[format].(string), "", "")
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != want.contentType || !strings.HasPrefix(string(body), want.magic) {
+			t.Errorf("%s download: %d %q %q", format, resp.StatusCode, resp.Header.Get("Content-Type"), body[:min(8, len(body))])
+		}
+		if !strings.Contains(resp.Header.Get("Content-Disposition"), "."+format) {
+			t.Errorf("%s filename: %q", format, resp.Header.Get("Content-Disposition"))
+		}
+	}
+
 	// ...but not if it's tampered with.
 	resp, _ = http.Get(e.api.URL + strings.Replace(link, "sig=", "sig=0", 1))
 	resp.Body.Close()
@@ -496,6 +516,9 @@ func TestAuthorization(t *testing.T) {
 	// Public endpoints stay public.
 	if resp, b := e.call("GET", "/config.json", "", ""); resp.StatusCode != 200 || !strings.Contains(string(b), "demo.firebaseapp.com") {
 		t.Fatalf("config.json: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := e.call("GET", "/version", "", ""); resp.StatusCode != 200 || !strings.Contains(string(b), `"commit":`) {
+		t.Fatalf("version: %d %s", resp.StatusCode, b)
 	}
 	for _, p := range []string{"/health", "/healthz"} {
 		if resp, _ := e.call("GET", p, "", ""); resp.StatusCode != 200 {

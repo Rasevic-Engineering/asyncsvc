@@ -50,7 +50,7 @@ var templates = map[string]tmpl{
 
 Your {{.kind}} report for {{.from}} to {{.to}} is ready ({{.rows}} rows).
 
-Get a download link here (links expire after 15 minutes):
+Open it to download (you'll be asked to sign in if you aren't already):
 {{.url}}
 `),
 	"report_failed": mustTmpl(

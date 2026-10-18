@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { api, REPORT_KINDS, type Report } from "@/lib/api";
+import { REPORT_KINDS, type Report } from "@/lib/api";
 import { addDays, duration, formatNumber, relativeTime } from "@/lib/format";
+import { DownloadButtons } from "./DownloadButtons";
 import { StatusBadge } from "./StatusBadge";
 
 const kindLabel = (k: string) => REPORT_KINDS.find((x) => x.value === k)?.label ?? k;
@@ -18,24 +19,7 @@ interface Props {
 }
 
 export function ReportList({ reports, error, highlight, onRetry, scope, onScopeChange }: Props) {
-  const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-
-  // Downloads need the auth token, which a plain link can't send. Ask the API
-  // for a short-lived signed URL, then navigate to it.
-  async function download(id: string) {
-    setDownloading(id);
-    setDownloadError(null);
-    try {
-      const r = await api.getReport(id);
-      if (!r.download_url) throw new Error("This report isn't ready to download.");
-      window.location.assign(r.download_url);
-    } catch (err) {
-      setDownloadError(err instanceof Error ? err.message : "Download failed.");
-    } finally {
-      setDownloading(null);
-    }
-  }
 
   return (
     <section className="card">
@@ -111,11 +95,7 @@ export function ReportList({ reports, error, highlight, onRetry, scope, onScopeC
                 )}
               </div>
               <div className="report-action">
-                {r.status === "ready" && (
-                  <button onClick={() => download(r.id)} disabled={downloading === r.id}>
-                    {downloading === r.id ? "Preparing…" : "Download CSV"}
-                  </button>
-                )}
+                {r.status === "ready" && <DownloadButtons report={r} onError={setDownloadError} />}
               </div>
             </li>
           ))}

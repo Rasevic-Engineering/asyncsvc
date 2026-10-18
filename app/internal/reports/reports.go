@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +81,32 @@ type Report struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	OwnerUID    *string    `json:"-"`
 	OwnerEmail  *string    `json:"owner_email,omitempty"`
+	Formats     []string   `json:"formats"`
+}
+
+// Format is a downloadable rendering of a report.
+type Format struct {
+	Ext         string
+	ContentType string
+}
+
+// Formats are generated in this order; CSV is the source for the others.
+var Formats = []Format{
+	{"csv", "text/csv"},
+	{"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	{"pdf", "application/pdf"},
+}
+
+// FormatKey returns the storage key of a format, derived from the CSV key.
+func FormatKey(csvKey, ext string) string {
+	return strings.TrimSuffix(csvKey, ".csv") + "." + ext
+}
+
+// KindLabels are human-readable report names (used in file headers).
+var KindLabels = map[string]string{
+	"events_by_type":     "Events by type",
+	"daily_active_users": "Daily active users",
+	"raw_events":         "Raw events",
 }
 
 // Owner identifies who requested a report.
@@ -88,12 +115,12 @@ type Owner struct {
 	Email string
 }
 
-const cols = `id, kind, params, notify_email, status, file_key, row_count, error, attempts, created_at, started_at, completed_at, owner_uid, owner_email`
+const cols = `id, kind, params, notify_email, status, file_key, row_count, error, attempts, created_at, started_at, completed_at, owner_uid, owner_email, formats`
 
 func scan(row pgx.Row) (Report, error) {
 	var r Report
 	err := row.Scan(&r.ID, &r.Kind, &r.Params, &r.NotifyEmail, &r.Status, &r.FileKey,
-		&r.RowCount, &r.Error, &r.Attempts, &r.CreatedAt, &r.StartedAt, &r.CompletedAt, &r.OwnerUID, &r.OwnerEmail)
+		&r.RowCount, &r.Error, &r.Attempts, &r.CreatedAt, &r.StartedAt, &r.CompletedAt, &r.OwnerUID, &r.OwnerEmail, &r.Formats)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrNotFound
 	}
@@ -165,10 +192,10 @@ func (r *Repo) Release(ctx context.Context, id uuid.UUID, cause string) error {
 	return err
 }
 
-func (r *Repo) MarkReady(ctx context.Context, tx pgx.Tx, id uuid.UUID, key string, rows int64) error {
+func (r *Repo) MarkReady(ctx context.Context, tx pgx.Tx, id uuid.UUID, key string, rows int64, formats []string) error {
 	_, err := tx.Exec(ctx,
-		`UPDATE reports SET status = 'ready', file_key = $2, row_count = $3, error = NULL, completed_at = now()
-		 WHERE id = $1`, id, key, rows)
+		`UPDATE reports SET status = 'ready', file_key = $2, row_count = $3, formats = $4, error = NULL, completed_at = now()
+		 WHERE id = $1`, id, key, rows, formats)
 	return err
 }
 
