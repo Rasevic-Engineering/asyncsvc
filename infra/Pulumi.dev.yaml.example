@@ -1,0 +1,13 @@
+# Copy to Pulumi.dev.yaml, or set these with `pulumi config set`.
+config:
+  gcp:project: my-gcp-project
+  gcp:region: us-central1
+  asyncsvc:platform: cloudrun            # or gke (GKE Autopilot)
+  asyncsvc:adminEmails: you@yourdomain.com     # gets the admin role once their email is verified
+  # Optional Google sign-in (create an OAuth client in the console first):
+  #   pulumi config set googleOAuthClientId 1234-abc.apps.googleusercontent.com
+  #   pulumi config set --secret googleOAuthClientSecret GOCSPX-...
+  asyncsvc:deletionProtection: "false"   # dev only: lets `pulumi destroy` remove the DB and data
+  asyncsvc:mailFrom: reports@yourdomain.com
+  # Optional; without it the worker logs emails instead of sending them:
+  #   pulumi config set --secret sendgridApiKey SG.xxxxx

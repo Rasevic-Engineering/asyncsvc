@@ -1,0 +1,31 @@
+name: asyncsvc
+runtime: go
+description: GCP infrastructure for the async Go REST service (Cloud Run or GKE Autopilot, Cloud SQL, Pub/Sub, BigQuery, GCS, Firebase Auth)
+config:
+  asyncsvc:platform:
+    type: string
+    default: cloudrun   # or: gke
+  asyncsvc:workerReplicas:
+    type: integer
+    default: 2          # gke only
+  asyncsvc:dbTier:
+    type: string
+    default: db-f1-micro
+  asyncsvc:bigqueryLocation:
+    type: string
+    default: US
+  asyncsvc:mailFrom:
+    type: string
+    default: reports@example.com
+  asyncsvc:publicApi:
+    type: boolean
+    default: true       # the API enforces Firebase auth itself
+  asyncsvc:adminEmails:
+    type: string
+    default: ""         # comma-separated; verified emails that get the admin role
+  asyncsvc:googleOAuthClientId:
+    type: string
+    default: ""         # optional; enables Google sign-in (also set googleOAuthClientSecret as a secret)
+  asyncsvc:deletionProtection:
+    type: boolean
+    default: true

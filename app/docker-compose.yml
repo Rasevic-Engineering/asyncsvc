@@ -1,0 +1,96 @@
+# Local stack: Postgres + Pub/Sub emulator + Firebase Auth emulator + API
+# (serving the web app) + worker. Open http://localhost:8080 for the UI.
+# Sign up with any email; admin@example.com gets the admin role.
+# Firebase Auth emulator UI-less REST API: http://localhost:9099
+#   docker compose up --build                   push mode (like Cloud Run)
+#   WORKER_MODE=pull docker compose up --build  pull mode (like GKE)
+# Run `docker compose down -v` when switching modes so the emulator starts clean.
+# BigQuery has no emulator, so the worker uses REPORT_SOURCE=fake and writes
+# reports to a local volume instead of Cloud Storage. Emails are logged.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 2s
+      retries: 30
+
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=local
+    ports: ["8085:8085"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085 || exit 1"]
+      interval: 2s
+      retries: 30
+
+  firebase:
+    # Firebase Auth emulator. Accepts any email/password and fake Google
+    # sign-ins; tokens are unsigned and only accepted when the API has
+    # FIREBASE_AUTH_EMULATOR_HOST set.
+    build: ./firebase
+    ports: ["9099:9099"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9099/ >/dev/null || exit 1"]
+      interval: 2s
+      retries: 60
+
+  devsetup:
+    build: { context: .., dockerfile: Dockerfile }
+    entrypoint: ["/bin/devsetup"]
+    environment: &common
+      GCP_PROJECT: local
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      DATABASE_URL: postgres://app:app@postgres:5432/app?sslmode=disable
+      REPORTS_DIR: /data/reports
+      WORKER_URL: http://worker:8081
+      WORKER_MODE: ${WORKER_MODE:-push}
+    depends_on:
+      pubsub: { condition: service_healthy }
+
+  api:
+    build: { context: .., dockerfile: Dockerfile }
+    entrypoint: ["/bin/api"]
+    environment:
+      <<: *common
+      PORT: "8080"
+      FIREBASE_PROJECT_ID: demo-asyncsvc
+      FIREBASE_AUTH_EMULATOR_HOST: firebase:9099   # server-side token checks
+      WEB_AUTH_EMULATOR_URL: http://localhost:9099  # what the browser connects to
+      WEB_FIREBASE_API_KEY: demo-api-key
+      WEB_FIREBASE_AUTH_DOMAIN: localhost
+      WEB_GOOGLE_SIGN_IN: "true"                   # the emulator fakes Google sign-in
+      ADMIN_EMAILS: admin@example.com
+      AUTH_TRUST_UNVERIFIED_EMAIL: "true"          # emulator only: skip email verification
+    ports: ["8080:8080"]
+    volumes: [reports:/data/reports]
+    depends_on:
+      postgres: { condition: service_healthy }
+      firebase: { condition: service_healthy }
+      devsetup: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: .., dockerfile: Dockerfile }
+    entrypoint: ["/bin/worker"]
+    environment:
+      <<: *common
+      PORT: "8081"
+      REPORT_SOURCE: fake
+      MAIL_PROVIDER: log
+      PUBLIC_API_URL: http://localhost:8080
+      # Pull mode runs the outbox sweep in-process (GKE); push mode relies on
+      # Cloud Scheduler, which doesn't exist locally, so sweep here too.
+      OUTBOX_SWEEP_INTERVAL: 15s
+    ports: ["8081:8081"]
+    volumes: [reports:/data/reports]
+    depends_on:
+      postgres: { condition: service_healthy }
+      devsetup: { condition: service_completed_successfully }
+
+volumes:
+  reports:

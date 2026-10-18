@@ -1,0 +1,8 @@
+encryptionsalt: v1:C23qM85qFtg=:v1:ip3hP1O+/tnrKzh2:gRtmbqoWr3DmZ2K6JQxVBNKuFkkeiw==
+config:
+  gcp:project: asyncsvc-dev
+  gcp:region: us-central1
+  asyncsvc:platform: cloudrun
+  asyncsvc:adminEmails: andrej@rasevicengineering.com
+  asyncsvc:deletionProtection: "false"
+  asyncsvc:image: us-central1-docker.pkg.dev/asyncsvc-dev/asyncsvc/app@sha256:424742efeff6f56044b052b655d1eb03e9a96bb6225fa055d8ff871d26e506c8

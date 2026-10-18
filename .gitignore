@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+*.tsbuildinfo
+
+# Go build artifacts
+/app/api
+/app/worker
+/app/devsetup
+*.test
+*.out
+
+# Secrets and local environment (never commit these)
+.env
+.env.*
+*.passphrase
+*.pem
+*-key.json
+credentials.json
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
