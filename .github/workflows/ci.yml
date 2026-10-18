@@ -148,8 +148,12 @@ jobs:
         env:
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
         run: |
+          # Public URL (custom domain if configured) for the GitHub environment
+          # link; checks go to Cloud Run directly, since the domain's
+          # certificate may still be provisioning after the first deploy.
           url="$(pulumi stack output apiUrl --stack "$PULUMI_STACK")"
+          run_url="$(pulumi stack output runUrl --stack "$PULUMI_STACK" 2>/dev/null || echo "$url")"
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors "$url/health"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/v1/me")" = 401
+          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors "$run_url/health"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$run_url/v1/me")" = 401
           echo "Deployed ${{ steps.image.outputs.digest }} to $url"

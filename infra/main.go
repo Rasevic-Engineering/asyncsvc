@@ -69,6 +69,7 @@ type settings struct {
 	useSendGrid        bool
 	workerReplicas     int // gke only
 	image              string
+	customDomain       string       // e.g. asyncsvc.example.com; Cloud Run only
 	github             githubDeploy // repository empty = no CI deploy access
 
 	// Auth.
@@ -160,6 +161,7 @@ func loadSettings(ctx *pulumi.Context) (settings, error) {
 		publicAPI:          true,
 		adminEmails:        cfg.Get("adminEmails"),
 		googleClientID:     cfg.Get("googleOAuthClientId"),
+		customDomain:       cfg.Get("customDomain"),
 		deletionProtection: true,
 		workerReplicas:     2,
 		// The image to deploy comes from the environment (set by `make
@@ -174,6 +176,9 @@ func loadSettings(ctx *pulumi.Context) (settings, error) {
 	}
 	if _, ok := platformAPIs[st.platform]; !ok {
 		return st, fmt.Errorf("asyncsvc:platform must be cloudrun or gke, got %q", st.platform)
+	}
+	if st.customDomain != "" && st.platform != "cloudrun" {
+		return st, fmt.Errorf("asyncsvc:customDomain is only supported with platform=cloudrun (on GKE, use a Gateway with a managed certificate)")
 	}
 	if v, err := cfg.TryBool("publicApi"); err == nil {
 		st.publicAPI = v
@@ -201,7 +206,11 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 	s := &shared{settings: st}
 
 	// ---- APIs --------------------------------------------------------
-	for _, api := range append(append([]string{}, sharedAPIs...), platformAPIs[st.platform]...) {
+	apiList := append(append([]string{}, sharedAPIs...), platformAPIs[st.platform]...)
+	if st.customDomain != "" {
+		apiList = append(apiList, "compute.googleapis.com") // HTTPS load balancer
+	}
+	for _, api := range apiList {
 		svc, err := projects.NewService(ctx, api, &projects.ServiceArgs{
 			Project:          pulumi.String(st.project),
 			Service:          pulumi.String(api),

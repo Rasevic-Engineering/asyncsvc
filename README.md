@@ -274,6 +274,8 @@ curl -si -H "$AUTH" $API/v1/reports -d '{"kind":"events_by_type","from":"2026-10
 | `platform` | `cloudrun` | `cloudrun` or `gke` |
 | `workerReplicas` | `2` | GKE only |
 | `publicApi` | `true` | Network-level access to the API/UI. The API enforces Firebase auth either way. `false` = IAM-only on Cloud Run, internal load balancer on GKE |
+| `customDomain` | empty | Cloud Run only: serve the app at this hostname through a global HTTPS load balancer with a Google-managed certificate and HTTP→HTTPS redirect (about $18/month). After deploying, create the DNS **A** record from the `customDomainDns` output; the certificate is issued once DNS resolves (15 minutes to a few hours)
+| `githubRepository` / `githubEnvironment` / `githubBranch` | empty / stack name / `main` | Which GitHub Actions runs may deploy this stack (see CI/CD) |
 | `adminEmails` | empty | Comma-separated; these verified emails get the admin role |
 | `googleOAuthClientId` / `googleOAuthClientSecret` (secret) | unset | Enables Google sign-in. Create a "Web application" OAuth client in the console first, with redirect URI `https://<project>.firebaseapp.com/__/auth/handler` |
 | `deletionProtection` | `true` | Applies to Cloud SQL, the BigQuery table and the bucket |

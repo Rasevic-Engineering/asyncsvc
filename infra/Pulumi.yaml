@@ -23,6 +23,18 @@ config:
   asyncsvc:adminEmails:
     type: string
     default: ""         # comma-separated; verified emails that get the admin role
+  asyncsvc:customDomain:
+    type: string
+    default: ""         # e.g. asyncsvc.example.com (Cloud Run domain mapping; verify the domain first)
+  asyncsvc:githubRepository:
+    type: string
+    default: ""         # owner/name; creates keyless GitHub Actions deploy access
+  asyncsvc:githubEnvironment:
+    type: string
+    default: ""         # GitHub environment allowed to deploy (defaults to the stack name)
+  asyncsvc:githubBranch:
+    type: string
+    default: main
   asyncsvc:googleOAuthClientId:
     type: string
     default: ""         # optional; enables Google sign-in (also set googleOAuthClientSecret as a secret)

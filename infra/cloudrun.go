@@ -95,6 +95,12 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		return err
 	}
 
+	// The URL users see: the custom domain if one is configured.
+	publicURL := apiSvc.Uri
+	if s.customDomain != "" {
+		publicURL = pulumi.String("https://" + s.customDomain).ToStringOutput()
+	}
+
 	workerEnv := append(cloudrunv2.ServiceTemplateContainerEnvArray{}, commonEnv...)
 	workerEnv = append(workerEnv,
 		runEnv("WORKER_MODE", pulumi.String("push")),
@@ -106,7 +112,7 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		// Bounded by Pub/Sub's 600s max ack deadline for push.
 		runEnv("REPORT_TIMEOUT", pulumi.String("9m")),
 		runEnv("REPORT_STALE_AFTER", pulumi.String("15m")),
-		runEnv("PUBLIC_API_URL", apiSvc.Uri),
+		runEnv("PUBLIC_API_URL", publicURL), // links in report emails
 		runEnv("MAIL_FROM", pulumi.String(s.mailFrom)),
 	)
 	if s.sendgridSecret != nil {
@@ -223,12 +229,24 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 	}
 
 	// Sign-in config; the API's own hostname must be an authorized domain.
+	// Sign-in config; the API's own hostnames must be authorized domains.
 	apiHost := apiSvc.Uri.ApplyT(func(u string) string { return strings.TrimPrefix(u, "https://") }).(pulumi.StringOutput)
-	if err := s.fb.configureSignIn(ctx, s, apiHost); err != nil {
+	hosts := []pulumi.StringInput{apiHost}
+	if s.customDomain != "" {
+		hosts = append(hosts, pulumi.String(s.customDomain))
+	}
+	if err := s.fb.configureSignIn(ctx, s, hosts...); err != nil {
 		return err
 	}
 
-	ctx.Export("apiUrl", apiSvc.Uri)
+	if s.customDomain != "" {
+		if err := setupLoadBalancer(ctx, s, apiSvc); err != nil {
+			return err
+		}
+	}
+
+	ctx.Export("apiUrl", publicURL)
+	ctx.Export("runUrl", apiSvc.Uri)
 	ctx.Export("workerUrl", workerSvc.Uri)
 	return nil
 }

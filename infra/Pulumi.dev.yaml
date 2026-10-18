@@ -8,3 +8,4 @@ config:
   asyncsvc:githubRepository: Rasevic-Engineering/asyncsvc
   asyncsvc:githubEnvironment: dev
   asyncsvc:githubBranch: main
+  asyncsvc:customDomain: asyncsvc.rasevicengineering.com
