@@ -232,6 +232,10 @@ cd .. && make release           # build + push the image, deploy the API and wor
 
 The first deploy takes about 20 minutes, mostly creating the Cloud SQL instance. After that, `make release` is the everyday command: it builds the image with `docker buildx` for `linux/amd64`, pushes it to Artifact Registry, and runs `pulumi up` with that digest in `ASYNCSVC_IMAGE`. `make deploy` applies infrastructure changes and keeps the image that's live (read from the stack's `image` output in shared state), so a local deploy can never roll back what CI shipped. To roll back, run `cd infra && ASYNCSVC_IMAGE=<repo>@sha256:<older digest> pulumi up`. A missing image is an error, never "delete the services".
 
+### Inspecting the database
+
+See **[docs/cloud-sql.md](docs/cloud-sql.md)**. It covers connecting to Cloud SQL from your machine through the Cloud SQL Auth Proxy, loading the database password from Secret Manager into `PGPASSWORD`, read-only sessions, and sample queries for reports, the outbox and emails.
+
 ### CI/CD (GitHub Actions)
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request and push:
@@ -306,6 +310,8 @@ curl -si -H "$AUTH" $API/v1/reports -d '{"kind":"events_by_type","from":"2026-10
 | `deletionProtection` | `true` | Applies to Cloud SQL, the BigQuery table and the bucket |
 
 ## Next steps for production
+
+The full backlog, including a step-by-step plan for **IAM database authentication** (passwordless, per-person, read-only-by-default access to Cloud SQL), is in **[docs/TODO.md](docs/TODO.md)**. Highlights:
 
 - **Custom domain.** Put the API behind your own domain (a Cloud Run domain mapping or load balancer, or a GKE Gateway with a managed certificate) and add it to the authorized domains in `infra/auth.go`. On GKE this is required for Google sign-in.
 - **Email verification UX.** Firebase sends its default verification email. Customize the template, or the sender domain, in the Firebase console. Options are Identity Platform/Firebase JWT middleware, API Gateway, or IAP.
