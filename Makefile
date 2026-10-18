@@ -33,15 +33,17 @@ state-bootstrap:
 	@test -n "$(PROJECT)" || (echo "usage: make state-bootstrap PROJECT=<gcp-project-id> [REGION=...]" && exit 1)
 	cd infra && ./bootstrap-state.sh $(PROJECT) $(or $(REGION),us-central1)
 
-# Container image: built with buildx for Cloud Run's linux/amd64, pushed to
-# the stack's Artifact Registry repo, and pinned by digest in the stack
-# config (asyncsvc:image). Pulumi then deploys exactly that build.
+# Container image: built with buildx for Cloud Run's linux/amd64 and pushed to
+# the stack's Artifact Registry repo. Deploys pass it to Pulumi by digest in
+# ASYNCSVC_IMAGE; the deployed digest is kept in the stack's `image` output
+# (shared state), never in the committed stack file.
 STACK_PROJECT = $(shell cd infra && pulumi config get gcp:project 2>/dev/null)
 STACK_REGION  = $(or $(shell cd infra && pulumi config get gcp:region 2>/dev/null),us-central1)
 REGISTRY      = $(STACK_REGION)-docker.pkg.dev
 IMAGE_REPO    = $(REGISTRY)/$(STACK_PROJECT)/asyncsvc/app
 IMAGE_TAG    ?= $(shell date -u +%Y%m%d-%H%M%S)
 IMAGE_META    = /tmp/asyncsvc-image-metadata.json
+IMAGE_DIGEST  = python3 -c 'import json; print(json.load(open("$(IMAGE_META)"))["containerimage.digest"])'
 
 image:
 	@test -n "$(STACK_PROJECT)" || (echo "Set gcp:project on the Pulumi stack first (cd infra && pulumi config set gcp:project ...)" && exit 1)
@@ -49,15 +51,17 @@ image:
 	docker buildx build --platform linux/amd64 \
 		-t $(IMAGE_REPO):$(IMAGE_TAG) \
 		--metadata-file $(IMAGE_META) --push .
-	cd infra && pulumi config set image \
-		"$(IMAGE_REPO)@$$(python3 -c 'import json; print(json.load(open("$(IMAGE_META)"))["containerimage.digest"])')"
-	@echo "Pinned asyncsvc:image to the new build. Run 'make deploy' to roll it out."
+	@echo "Pushed $(IMAGE_REPO)@$$($(IMAGE_DIGEST))"
 
+# Build, push and deploy a new image.
+release: image
+	cd infra && ASYNCSVC_IMAGE="$(IMAGE_REPO)@$$($(IMAGE_DIGEST))" pulumi up
+
+# Apply infrastructure changes, keeping the image that's live now.
 deploy:
-	cd infra && pulumi up
-
-# Build, push and deploy in one go.
-release: image deploy
+	cd infra && img="$$(pulumi stack output image)" && test -n "$$img" \
+		|| { echo "No deployed image found; run 'make release' instead."; exit 1; }; \
+		ASYNCSVC_IMAGE="$$img" pulumi up
 
 destroy:
-	cd infra && pulumi destroy
+	cd infra && ASYNCSVC_IMAGE=skip pulumi destroy

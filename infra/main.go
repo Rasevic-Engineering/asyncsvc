@@ -13,6 +13,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/artifactregistry"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/bigquery"
@@ -43,7 +44,8 @@ var sharedAPIs = []string{
 	"firebase.googleapis.com",
 	"identitytoolkit.googleapis.com", // Firebase Auth / Identity Platform
 	"iam.googleapis.com",
-	"iamcredentials.googleapis.com", // signed URLs without key files
+	"iamcredentials.googleapis.com", // signed URLs, GitHub Actions impersonation
+	"sts.googleapis.com",            // Workload Identity Federation token exchange
 	"pubsub.googleapis.com",
 	"secretmanager.googleapis.com",
 	"sqladmin.googleapis.com",
@@ -67,6 +69,7 @@ type settings struct {
 	useSendGrid        bool
 	workerReplicas     int // gke only
 	image              string
+	github             githubDeploy // repository empty = no CI deploy access
 
 	// Auth.
 	adminEmails        string // comma-separated
@@ -115,12 +118,22 @@ func main() {
 		if err != nil {
 			return err
 		}
-		if st.image == "" {
-			// First deploy of a new project: create the data plane and the
-			// registry, then push an image and run `pulumi up` again.
-			ctx.Log.Warn("asyncsvc:image is not set, so the API and worker were not deployed. "+
-				"Run `make image` to build and push the container (it sets asyncsvc:image), then `make deploy`.", nil)
+		switch st.image {
+		case "":
+			// Never treat a missing image as "no services": Pulumi would
+			// delete the running API and worker.
+			return fmt.Errorf("ASYNCSVC_IMAGE is not set. Use `make release` (build and deploy a new image) " +
+				"or `make deploy` (keep the image that's live now)")
+		case "skip":
+			// First deploy of a brand-new project: create the data plane and
+			// the registry only, then `make release` pushes an image.
+			ctx.Log.Warn("ASYNCSVC_IMAGE=skip: the API and worker are not deployed.", nil)
 			return nil
+		}
+		if st.github.repository != "" {
+			if err := setupGitHubDeploys(ctx, s, st.github); err != nil {
+				return err
+			}
 		}
 		switch st.platform {
 		case "cloudrun":
@@ -149,7 +162,15 @@ func loadSettings(ctx *pulumi.Context) (settings, error) {
 		googleClientID:     cfg.Get("googleOAuthClientId"),
 		deletionProtection: true,
 		workerReplicas:     2,
-		image:              cfg.Get("image"),
+		// The image to deploy comes from the environment (set by `make
+		// release`, `make deploy` and CI), not from the committed stack file,
+		// so a local deploy can never roll back what CI shipped.
+		image: os.Getenv("ASYNCSVC_IMAGE"),
+		github: githubDeploy{
+			repository:  cfg.Get("githubRepository"),
+			environment: orDefault(cfg.Get("githubEnvironment"), ctx.Stack()),
+			branch:      orDefault(cfg.Get("githubBranch"), "main"),
+		},
 	}
 	if _, ok := platformAPIs[st.platform]; !ok {
 		return st, fmt.Errorf("asyncsvc:platform must be cloudrun or gke, got %q", st.platform)
@@ -248,7 +269,8 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 		return nil, err
 	}
 	// The image is built and pushed outside Pulumi (`make image`, or CI) and
-	// passed in by digest, so every deploy pins an exact, immutable build.
+	// passed in by digest via ASYNCSVC_IMAGE, so every deploy pins an exact,
+	// immutable build. The deployed digest is exported as `image`.
 	s.image = pulumi.String(st.image)
 	ctx.Export("imageRepository", pulumi.Sprintf("%s-docker.pkg.dev/%s/%s/app", st.region, st.project, s.repo.RepositoryId))
 

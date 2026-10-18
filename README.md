@@ -201,11 +201,41 @@ pulumi config set adminEmails you@yourdomain.com   # admin role once that email 
 pulumi config set deletionProtection false    # dev only
 pulumi config set --secret sendgridApiKey SG.xxx   # optional; otherwise emails are logged
 export PULUMI_CONFIG_PASSPHRASE_FILE=~/.config/pulumi/asyncsvc-dev.passphrase   # or PULUMI_CONFIG_PASSPHRASE
-cd .. && make deploy    # first run: data plane + registry (API/worker are skipped until an image exists)
-make release            # build + push the image, pin its digest, deploy the API and worker
+ASYNCSVC_IMAGE=skip pulumi up   # first run only: data plane + registry, no API/worker yet
+cd .. && make release           # build + push the image, deploy the API and worker with its digest
 ```
 
-The first deploy takes about 20 minutes, mostly creating the Cloud SQL instance. After that, `make release` is the everyday command: it builds the image with `docker buildx` for `linux/amd64`, pushes it to Artifact Registry, pins `asyncsvc:image` to its digest, and runs `pulumi up`. Every deploy runs an exact, immutable build, and rolling back means setting `asyncsvc:image` to an earlier digest and running `make deploy`.
+The first deploy takes about 20 minutes, mostly creating the Cloud SQL instance. After that, `make release` is the everyday command: it builds the image with `docker buildx` for `linux/amd64`, pushes it to Artifact Registry, and runs `pulumi up` with that digest in `ASYNCSVC_IMAGE`. `make deploy` applies infrastructure changes and keeps the image that's live (read from the stack's `image` output in shared state), so a local deploy can never roll back what CI shipped. To roll back, run `cd infra && ASYNCSVC_IMAGE=<repo>@sha256:<older digest> pulumi up`. A missing image is an error, never "delete the services".
+
+### CI/CD (GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request and push:
+
+| Job | When | What |
+|---|---|---|
+| Go (API, worker, infra) | always | `go vet`, unit tests, integration tests (embedded Postgres), infra compiles |
+| Next.js web app | always | `npm ci`, type-check, static export build |
+| Deploy to dev | push to `main`, after both pass | **waits for approval**, then builds the image (native amd64, layer cache), `pulumi up` with that digest, then smoke-tests `/health` and `/v1/me` |
+
+GitHub authenticates to GCP with **Workload Identity Federation**, so no service account key exists anywhere. GCP trusts only runs that are all of: this repository, the `main` branch, and the `dev` GitHub environment. The trust rule and the `asyncsvc-deployer` service account are in [`infra/cicd.go`](infra/cicd.go), configured per stack:
+
+```bash
+pulumi config set githubRepository Rasevic-Engineering/asyncsvc
+pulumi config set githubEnvironment dev     # defaults to the stack name
+pulumi config set githubBranch main
+```
+
+One-time GitHub setup (Settings > Environments):
+
+1. Create the environment **`dev`**: add yourself under **Required reviewers**, and limit **Deployment branches** to `main`.
+2. Add the environment secret **`PULUMI_CONFIG_PASSPHRASE`** (the stack passphrase).
+
+**Adding staging or production later:**
+1. Create a stack (`pulumi stack init prod`) pointing at its own GCP project, with `githubEnvironment` and `githubBranch` set.
+2. Run `make state-bootstrap`, then `cd infra && ASYNCSVC_IMAGE=skip pulumi up` once locally to create its deployer.
+3. Copy the `deploy-dev` job with the new environment's values.
+
+Each environment gets its own deployer identity, so one can never deploy another.
 
 ### GKE instead of Cloud Run
 

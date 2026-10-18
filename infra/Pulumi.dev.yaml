@@ -5,4 +5,6 @@ config:
   asyncsvc:platform: cloudrun
   asyncsvc:adminEmails: andrej@rasevicengineering.com
   asyncsvc:deletionProtection: "false"
-  asyncsvc:image: us-central1-docker.pkg.dev/asyncsvc-dev/asyncsvc/app@sha256:424742efeff6f56044b052b655d1eb03e9a96bb6225fa055d8ff871d26e506c8
+  asyncsvc:githubRepository: Rasevic-Engineering/asyncsvc
+  asyncsvc:githubEnvironment: dev
+  asyncsvc:githubBranch: main

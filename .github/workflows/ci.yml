@@ -1,0 +1,155 @@
+# CI on every pull request and push; deploy on push to main.
+#
+# Deploys authenticate to GCP with Workload Identity Federation (no keys).
+# GCP only trusts runs of this repo, on the deploy branch, inside the GitHub
+# environment named below. Approvals are configured on that environment
+# (Settings > Environments > dev > Required reviewers).
+#
+# To add another environment later (e.g. staging from `develop`): create a
+# Pulumi stack in its own GCP project with githubEnvironment/githubBranch set,
+# run `make deploy` once locally, then copy the deploy job with that
+# environment's values.
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: Go (API, worker, infra)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: |
+            app/go.sum
+            infra/go.sum
+
+      - name: Vet and unit tests
+        working-directory: app
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+          go test ./...
+
+      - name: Integration tests (embedded Postgres)
+        working-directory: app
+        run: go test -tags integration ./internal/e2e/ -count=1
+
+      - name: Infra compiles
+        working-directory: infra
+        run: |
+          go vet ./...
+          go build -o /dev/null .
+
+  frontend:
+    name: Next.js web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install, type-check, build
+        working-directory: web
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run build
+
+  deploy-dev:
+    name: Deploy to dev
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ steps.smoke.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write # lets the job request a GitHub OIDC token for GCP
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false # never interrupt a deploy midway
+    env:
+      PULUMI_STACK: dev
+      PULUMI_BACKEND: gs://asyncsvc-dev-pulumi-state
+      GCP_PROJECT: asyncsvc-dev
+      GCP_REGION: us-central1
+      WIF_PROVIDER: projects/596555464505/locations/global/workloadIdentityPools/github/providers/github-actions
+      DEPLOYER_SA: asyncsvc-deployer@asyncsvc-dev.iam.gserviceaccount.com
+      IMAGE_REPO: us-central1-docker.pkg.dev/asyncsvc-dev/asyncsvc/app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: infra/go.mod
+          cache-dependency-path: infra/go.sum
+
+      - name: Install Pulumi
+        uses: pulumi/actions@v6
+
+      - name: Deploy (pulumi up)
+        working-directory: infra
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+          ASYNCSVC_IMAGE: ${{ env.IMAGE_REPO }}@${{ steps.image.outputs.digest }}
+        run: |
+          pulumi login "$PULUMI_BACKEND"
+          pulumi up --stack "$PULUMI_STACK" --yes --non-interactive --diff
+
+      - name: Smoke test
+        id: smoke
+        working-directory: infra
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+        run: |
+          url="$(pulumi stack output apiUrl --stack "$PULUMI_STACK")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          curl -fsS --retry 5 --retry-delay 5 --retry-all-errors "$url/health"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/v1/me")" = 401
+          echo "Deployed ${{ steps.image.outputs.digest }} to $url"
