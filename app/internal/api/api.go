@@ -14,14 +14,18 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/auth"
 	"github.com/example/asyncsvc/internal/blob"
 	"github.com/example/asyncsvc/internal/httpx"
@@ -44,6 +48,8 @@ type Server struct {
 	WebDir string
 	// Web is the public config the React app loads from /config.json.
 	Web WebConfig
+	// Activity records published analytics events.
+	Activity *activity.Recorder
 	// FirebaseHandlerHost, if set (e.g. my-project.firebaseapp.com), makes
 	// the API proxy Firebase's /__/auth/ sign-in helper, so Web.Firebase.
 	// AuthDomain can be this app's own domain.
@@ -60,7 +66,9 @@ type WebConfig struct {
 	} `json:"firebase"`
 	// Set when using the Firebase Auth emulator, e.g. http://localhost:9099.
 	AuthEmulatorURL string `json:"authEmulatorUrl,omitempty"`
-	GoogleSignIn    bool   `json:"googleSignIn"`
+	// Set when using the Firestore emulator, e.g. localhost:8088.
+	FirestoreEmulatorHost string `json:"firestoreEmulatorHost,omitempty"`
+	GoogleSignIn          bool   `json:"googleSignIn"`
 }
 
 func (s *Server) Routes() http.Handler {
@@ -299,6 +307,8 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ids := make([]string, len(out))
+	types := map[string]int{}
+	start := time.Now()
 	for i, ev := range out {
 		data, _ := json.Marshal(ev)
 		if _, err := s.Pub.Publish(r.Context(), s.TopicEvents, data, map[string]string{"event_type": ev.EventType}); err != nil {
@@ -306,8 +316,27 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ids[i] = ev.EventID
+		types[ev.EventType]++
 	}
+	// One activity row per batch (not per event), so a big batch doesn't
+	// flood the feed. The BigQuery subscription consumes these directly.
+	s.Activity.Record(messages.Activity{
+		Kind: messages.ActivityPublished, Topic: s.TopicEvents,
+		Summary: summarizeEvents(len(out), types), DurationMs: time.Since(start).Milliseconds(),
+	})
 	httpx.JSON(w, http.StatusAccepted, map[string]any{"accepted": len(ids), "event_ids": ids})
+}
+
+func summarizeEvents(n int, types map[string]int) string {
+	names := make([]string, 0, len(types))
+	for t, c := range types {
+		names = append(names, fmt.Sprintf("%s×%d", t, c))
+	}
+	sort.Strings(names)
+	if len(names) > 3 {
+		names = append(names[:3], "…")
+	}
+	return fmt.Sprintf("%d events → BigQuery (%s)", n, strings.Join(names, ", "))
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {

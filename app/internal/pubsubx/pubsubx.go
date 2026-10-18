@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -52,6 +53,19 @@ func NewPublisher(ctx context.Context, project string) (*Publisher, error) {
 func (p *Publisher) Publish(ctx context.Context, topic string, data []byte, attrs map[string]string) (string, error) {
 	res := p.publisher(topic).Publish(ctx, &pubsub.Message{Data: data, Attributes: attrs})
 	return res.Get(ctx)
+}
+
+// PublishAsync publishes without waiting. Failures are logged and dropped,
+// so it's only for best-effort messages such as activity events.
+func (p *Publisher) PublishAsync(topic string, data []byte, attrs map[string]string) {
+	res := p.publisher(topic).Publish(context.Background(), &pubsub.Message{Data: data, Attributes: attrs})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := res.Get(ctx); err != nil {
+			slog.Warn("best-effort publish failed", "topic", topic, "err", err)
+		}
+	}()
 }
 
 func (p *Publisher) publisher(topic string) *pubsub.Publisher {

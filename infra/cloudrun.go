@@ -38,6 +38,7 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		runEnv("TOPIC_REPORTS", s.reportsTopic.Name),
 		runEnv("TOPIC_EMAILS", s.emailsTopic.Name),
 		runEnv("TOPIC_EVENTS", s.eventsTopic.Name),
+		runEnv("TOPIC_ACTIVITY", s.activityTopic.Name),
 		runEnv("REPORTS_BUCKET", s.bucket.Name),
 		runEnv("IMAGE", s.image), // reported by GET /version
 	}
@@ -110,6 +111,7 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		runEnv("BQ_EVENTS_TABLE", s.eventsTable.TableId),
 		runEnv("BQ_LOCATION", pulumi.String(s.bqLocation)),
 		runEnv("REPORTS_MAX_ATTEMPTS", pulumi.Sprintf("%d", reportsMaxAttempts)),
+		runEnv("EMAIL_MAX_ATTEMPTS", pulumi.Sprintf("%d", emailsMaxAttempts)),
 		// Bounded by Pub/Sub's 600s max ack deadline for push.
 		runEnv("REPORT_TIMEOUT", pulumi.String("9m")),
 		runEnv("REPORT_STALE_AFTER", pulumi.String("15m")),
@@ -207,6 +209,10 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		return err
 	}
 	if err := pushSub("emails-push", s.emailsTopic, "/pubsub/emails", 60, emailsMaxAttempts); err != nil {
+		return err
+	}
+	// Activity events: the worker stores them in Firestore for the live feed.
+	if err := pushSub("activity-push", s.activityTopic, "/pubsub/activity", 30, emailsMaxAttempts); err != nil {
 		return err
 	}
 

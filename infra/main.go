@@ -42,6 +42,8 @@ var sharedAPIs = []string{
 	"bigquery.googleapis.com",
 	"bigquerystorage.googleapis.com",
 	"firebase.googleapis.com",
+	"firebaserules.googleapis.com",
+	"firestore.googleapis.com",       // admin Activity feed
 	"identitytoolkit.googleapis.com", // Firebase Auth / Identity Platform
 	"iam.googleapis.com",
 	"iamcredentials.googleapis.com", // signed URLs, GitHub Actions impersonation
@@ -105,6 +107,7 @@ type shared struct {
 	bqGrants    []pulumi.Resource
 
 	reportsTopic, emailsTopic, eventsTopic, deadLetterTopic *pubsub.Topic
+	activityTopic                                           *pubsub.Topic
 
 	fb *firebaseAuth
 }
@@ -542,6 +545,9 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 	}
 
 	if s.fb, err = setupFirebase(ctx, s); err != nil {
+		return nil, err
+	}
+	if err := s.setupActivity(ctx); err != nil {
 		return nil, err
 	}
 

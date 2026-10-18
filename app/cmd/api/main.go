@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/api"
 	"github.com/example/asyncsvc/internal/auth"
 	"github.com/example/asyncsvc/internal/blob"
@@ -69,11 +70,14 @@ func run() error {
 	web.Firebase.ProjectID = cfg.FirebaseProjectID
 	web.AuthEmulatorURL = cfg.WebAuthEmulatorURL
 	web.GoogleSignIn = cfg.WebGoogleSignIn
+	web.FirestoreEmulatorHost = cfg.WebFirestoreEmulatorHost
 
+	rec := &activity.Recorder{Pub: pub, Topic: cfg.TopicActivity, Service: "api"}
 	srv := &api.Server{
 		Pool:                pool,
 		Reports:             &reports.Repo{Pool: pool},
-		Relay:               &outbox.Relay{Pool: pool, Pub: pub},
+		Relay:               &outbox.Relay{Pool: pool, Pub: pub, Activity: rec},
+		Activity:            rec,
 		Pub:                 pub,
 		Store:               store,
 		TopicReports:        cfg.TopicReports,

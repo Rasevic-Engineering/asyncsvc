@@ -8,6 +8,22 @@ A Go REST service that keeps slow work off the request path, a Next.js frontend 
 - **Auth**: Firebase Authentication (Identity Platform). Email/password sign-in, plus Google when an OAuth client is configured. The API verifies the Firebase ID token on every `/v1` request.
 - **Analytics events**: `POST /v1/events` publishes to Pub/Sub, and a **BigQuery subscription** writes the events into a partitioned table. No consumer code is involved.
 
+## Admin Activity feed
+
+Admins get an **Activity** page (`/activity`) that shows Pub/Sub messages live, as they're published and processed. Each message appears with its topic, a summary, its current state, and a timeline of its stages, with timings and errors.
+
+```
+API, worker ──publish──▶ topic "activity" ──┬─▶ worker ──▶ Firestore "activity" ──▶ browser (real-time listener)
+                                            └─▶ BigQuery analytics.message_activity (full history)
+```
+
+- **Stages:** `published` (outbox relay or events API), `received`, then `acked`, `retrying`, `nacked` or `dead_lettered` (worker), with attempt number, duration and error.
+- **Best-effort recording:** events are published without waiting, so recording never slows or fails real work. Activity about activity is never recorded, which would loop.
+- **Real time:** the page uses Firestore's listener (the Firebase SDK keeps the connection), so there's no polling and no long-lived connections on Cloud Run.
+- **Access:** Firestore security rules ([`infra/firestore.rules.tmpl`](infra/firestore.rules.tmpl)) allow reads only for admins (the `admin` claim, or a verified email in `adminEmails`), and no browser writes. Rules can't check token revocation, so a revoked admin can still read this feed until their token expires (≤1h); the API cuts them off immediately.
+- **Retention:** a Firestore TTL policy deletes events after 7 days. Query the full history in BigQuery, for example retry rates or p95 processing time per topic.
+- **Locally:** the docker-compose Firebase emulator runs Firestore too, with rules from `app/firebase/firestore.rules`.
+
 ## Authentication and authorization
 
 | Role | Who | Can |

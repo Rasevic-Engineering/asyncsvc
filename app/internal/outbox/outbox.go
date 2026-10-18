@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/messages"
 )
 
@@ -44,6 +45,8 @@ func Enqueue(ctx context.Context, tx pgx.Tx, topic string, payload any, attrs ma
 type Relay struct {
 	Pool *pgxpool.Pool
 	Pub  Publisher
+	// Activity, if set, records each message's "published" stage.
+	Activity *activity.Recorder
 }
 
 const batchSize = 100
@@ -115,7 +118,8 @@ func (r *Relay) flushBatch(ctx context.Context, ids []uuid.UUID) (published, see
 		}
 		attrs[messages.AttrOutboxID] = m.id.String()
 
-		if _, err := r.Pub.Publish(ctx, m.topic, m.payload, attrs); err != nil {
+		msgID, err := r.Pub.Publish(ctx, m.topic, m.payload, attrs)
+		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("publish outbox %s to %s: %w", m.id, m.topic, err)
 			}
@@ -125,6 +129,11 @@ func (r *Relay) flushBatch(ctx context.Context, ids []uuid.UUID) (published, see
 			continue
 		}
 		ok = append(ok, m.id)
+		summary, reportID := activity.Describe(m.payload)
+		r.Activity.Record(messages.Activity{
+			Kind: messages.ActivityPublished, Topic: m.topic, MessageID: msgID,
+			OutboxID: m.id.String(), Summary: summary, ReportID: reportID,
+		})
 	}
 
 	if len(ok) > 0 {

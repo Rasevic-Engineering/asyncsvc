@@ -131,7 +131,8 @@ func inlineScriptHashes(dir string) map[string][]string {
 // scripts of the page being served.
 func contentSecurityPolicy(web WebConfig, scriptHashes []string) string {
 	script := append([]string{"'self'", "https://apis.google.com"}, scriptHashes...)
-	connect := []string{"'self'", "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com"}
+	connect := []string{"'self'", "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com",
+		"https://firestore.googleapis.com"} // admin Activity feed
 	frame := []string{}
 	if d := web.Firebase.AuthDomain; d != "" {
 		frame = append(frame, "https://"+d)
@@ -139,6 +140,9 @@ func contentSecurityPolicy(web WebConfig, scriptHashes []string) string {
 	if web.AuthEmulatorURL != "" {
 		connect = append(connect, web.AuthEmulatorURL)
 		frame = append(frame, web.AuthEmulatorURL)
+	}
+	if web.FirestoreEmulatorHost != "" {
+		connect = append(connect, "http://"+web.FirestoreEmulatorHost, "ws://"+web.FirestoreEmulatorHost)
 	}
 	if len(frame) == 0 {
 		frame = append(frame, "'none'")

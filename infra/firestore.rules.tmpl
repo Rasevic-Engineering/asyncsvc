@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// Firestore is only used for the admin Activity feed. Browsers may read it
+// when they're an admin; nobody may write from a browser (the worker writes
+// with its service account, which bypasses rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.admin == true ||
+        (request.auth.token.email_verified == true &&
+         request.auth.token.email.lower() in __ADMIN_EMAILS__)
+      );
+    }
+
+    match /activity/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

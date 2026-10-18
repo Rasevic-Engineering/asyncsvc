@@ -15,8 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/blob"
 	"github.com/example/asyncsvc/internal/config"
 	"github.com/example/asyncsvc/internal/db"
@@ -88,18 +90,29 @@ func run() error {
 		mailer = &mail.SendGrid{APIKey: cfg.SendGridAPIKey, From: cfg.MailFrom}
 	}
 
+	rec := &activity.Recorder{Pub: pub, Topic: cfg.TopicActivity, Service: "worker"}
+	// Firestore holds the live activity feed. Honors FIRESTORE_EMULATOR_HOST.
+	fs, err := firestore.NewClient(ctx, cfg.FirebaseProjectID)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer fs.Close()
 	wk := &worker.Worker{
-		Pool:            pool,
-		Reports:         &reports.Repo{Pool: pool},
-		Source:          source,
-		Store:           store,
-		Mailer:          mailer,
-		Relay:           &outbox.Relay{Pool: pool, Pub: pub},
-		TopicEmails:     cfg.TopicEmails,
-		PublicAPIURL:    cfg.PublicAPIURL,
-		MaxAttempts:     cfg.ReportsMaxAttempts,
-		GenerateTimeout: cfg.ReportTimeout,
-		StaleAfter:      cfg.ReportStaleAfter,
+		Pool:             pool,
+		Reports:          &reports.Repo{Pool: pool},
+		Source:           source,
+		Store:            store,
+		Mailer:           mailer,
+		Relay:            &outbox.Relay{Pool: pool, Pub: pub, Activity: rec},
+		Activity:         rec,
+		ActivitySink:     &activity.FirestoreSink{Client: fs},
+		EmailMaxAttempts: cfg.EmailMaxAttempts,
+		TopicReports:     cfg.TopicReports,
+		TopicEmails:      cfg.TopicEmails,
+		PublicAPIURL:     cfg.PublicAPIURL,
+		MaxAttempts:      cfg.ReportsMaxAttempts,
+		GenerateTimeout:  cfg.ReportTimeout,
+		StaleAfter:       cfg.ReportStaleAfter,
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -110,8 +123,9 @@ func run() error {
 		// running report is never redelivered while it's still in progress.
 		maxExt := cfg.ReportTimeout + 5*time.Minute
 		for sub, h := range map[string]pubsubx.Handler{
-			cfg.SubReports: wk.Handle(wk.HandleReport),
-			cfg.SubEmails:  wk.Handle(wk.HandleEmail),
+			cfg.SubReports:  wk.ReportHandler(),
+			cfg.SubEmails:   wk.EmailHandler(),
+			cfg.SubActivity: wk.HandleActivity, // uninstrumented on purpose
 		} {
 			g.Go(func() error {
 				slog.Info("consuming", "subscription", sub)

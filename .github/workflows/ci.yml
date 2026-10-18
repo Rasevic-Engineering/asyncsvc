@@ -49,10 +49,11 @@ jobs:
         working-directory: app
         run: go test -tags integration ./internal/e2e/ -count=1
 
-      - name: Infra compiles
+      - name: Infra compiles and tests pass
         working-directory: infra
         run: |
           go vet ./...
+          go test ./...
           go build -o /dev/null .
 
   frontend:

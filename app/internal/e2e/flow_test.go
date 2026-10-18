@@ -28,6 +28,7 @@ import (
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/api"
 	"github.com/example/asyncsvc/internal/auth"
 	"github.com/example/asyncsvc/internal/blob"
@@ -64,6 +65,10 @@ func (f *fakePubSub) Publish(_ context.Context, topic string, data []byte, attrs
 	id := fmt.Sprint(f.seq)
 	f.msgs = append(f.msgs, published{topic, data, attrs, id})
 	return id, nil
+}
+
+func (f *fakePubSub) PublishAsync(topic string, data []byte, attrs map[string]string) {
+	f.Publish(context.Background(), topic, data, attrs)
 }
 
 func (f *fakePubSub) take(topic string) []published {
@@ -113,7 +118,21 @@ func (s *flakySource) Generate(ctx context.Context, kind string, p reports.Param
 	return s.inner.Generate(ctx, kind, p, w)
 }
 
+// memorySink stands in for Firestore.
+type memorySink struct {
+	mu     sync.Mutex
+	events []messages.Activity
+}
+
+func (m *memorySink) Write(_ context.Context, a messages.Activity) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, a)
+	return nil
+}
+
 type env struct {
+	sink    *memorySink
 	t       *testing.T
 	pool    *pgxpool.Pool
 	ps      *fakePubSub
@@ -202,7 +221,11 @@ func setup(t *testing.T) *env {
 	e.source = &flakySource{inner: reports.FakeSource{}}
 	store := blob.NewLocal(e.reports)
 	repo := &reports.Repo{Pool: pool}
-	e.relay = &outbox.Relay{Pool: pool, Pub: e.ps}
+	rec := func(service string) *activity.Recorder {
+		return &activity.Recorder{Pub: e.ps, Topic: "activity", Service: service}
+	}
+	e.sink = &memorySink{}
+	e.relay = &outbox.Relay{Pool: pool, Pub: e.ps, Activity: rec("api")}
 
 	// Mimics a Next.js static export.
 	webDir := filepath.Join(tmp, "web")
@@ -215,7 +238,7 @@ func setup(t *testing.T) *env {
 	e.api = httptest.NewServer((&api.Server{
 		Pool: pool, Reports: repo, Relay: e.relay, Pub: e.ps, Store: store,
 		TopicReports: "report-requests", TopicEvents: "events", WebDir: webDir,
-		Auth: users, Web: webCfg,
+		Auth: users, Web: webCfg, Activity: rec("api"),
 	}).Routes())
 	t.Cleanup(e.api.Close)
 
@@ -223,6 +246,8 @@ func setup(t *testing.T) *env {
 		Pool: pool, Reports: repo, Source: e.source, Store: store, Mailer: e.mailer,
 		Relay: e.relay, TopicEmails: "email-requests", PublicAPIURL: "https://api.example.com",
 		MaxAttempts: 3, GenerateTimeout: 10 * time.Second, StaleAfter: time.Minute,
+		TopicReports: "report-requests", EmailMaxAttempts: 5,
+		Activity: rec("worker"), ActivitySink: e.sink,
 	}).Routes())
 	t.Cleanup(e.worker.Close)
 	return e
@@ -615,5 +640,85 @@ func TestServesWebApp(t *testing.T) {
 	}
 	if resp, body := e.call("GET", "/../../etc/passwd", "", ""); resp.StatusCode != 404 || strings.Contains(string(body), "root:") {
 		t.Fatalf("traversal: %d %q", resp.StatusCode, body)
+	}
+}
+
+// deliverActivity pushes recorded activity events through the activity
+// subscription endpoint, as Pub/Sub would, and returns what reached the sink
+// (Firestore in production) since index `from`.
+func (e *env) deliverActivity(from int) []messages.Activity {
+	e.t.Helper()
+	for _, m := range e.ps.take("activity") {
+		if got := e.push("/pubsub/activity", m, 1); got != http.StatusNoContent {
+			e.t.Fatalf("activity push: %d", got)
+		}
+	}
+	e.sink.mu.Lock()
+	defer e.sink.mu.Unlock()
+	return append([]messages.Activity(nil), e.sink.events[from:]...)
+}
+
+func kinds(rows []messages.Activity) string {
+	var k []string
+	for _, r := range rows {
+		k = append(k, r.Topic+":"+r.Kind)
+	}
+	return strings.Join(k, " ")
+}
+
+func TestActivityFeed(t *testing.T) {
+	e := setup(t)
+	_, rep, _ := e.createReport(`{"kind":"daily_active_users","from":"2026-01-01","to":"2026-01-03","notify":true}`)
+	e.push("/pubsub/reports", e.one("report-requests"), 1)
+	e.push("/pubsub/emails", e.one("email-requests"), 1)
+
+	rows := e.deliverActivity(0)
+	want := "report-requests:published report-requests:received email-requests:published report-requests:acked email-requests:received email-requests:acked"
+	if kinds(rows) != want {
+		t.Fatalf("activity:\n got  %s\n want %s", kinds(rows), want)
+	}
+	if r := rows[0]; r.ReportID != rep["id"] || r.Summary != "report request" || r.OutboxID == "" || r.Service != "api" || r.At == 0 {
+		t.Fatalf("published event: %+v", r)
+	}
+	if r := rows[3]; r.Attempt != 1 || r.Service != "worker" || r.MessageID == "" {
+		t.Fatalf("acked event: %+v", r)
+	}
+	if !strings.HasPrefix(rows[4].Summary, "email report_ready to alice@example.com") {
+		t.Fatalf("email summary: %q", rows[4].Summary)
+	}
+	seen := len(rows)
+
+	// Failures: nacked, then dead_lettered on the final attempt (MaxAttempts=3).
+	e.source.failures = -1
+	e.createReport(`{"kind":"raw_events","from":"2026-01-01","to":"2026-01-02"}`)
+	msg := e.one("report-requests")
+	for attempt := 1; attempt <= 3; attempt++ {
+		e.push("/pubsub/reports", msg, attempt)
+	}
+	newer := e.deliverActivity(seen)
+	got := kinds(newer)
+	for _, w := range []string{"report-requests:nacked", "report-requests:dead_lettered"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("want %s in %s", w, got)
+		}
+	}
+	for _, r := range newer {
+		if r.Kind == "dead_lettered" && (r.Attempt != 3 || r.Error == "") {
+			t.Fatalf("dead_lettered event: %+v", r)
+		}
+	}
+	seen += len(newer)
+
+	// Events: one activity event per batch.
+	e.call("POST", "/v1/events", "admin-token", `[{"event_type":"signup","user_id":"u"},{"event_type":"signup","user_id":"v"}]`)
+	e.ps.take("events")
+	evRows := e.deliverActivity(seen)
+	if len(evRows) != 1 || evRows[0].Topic != "events" || evRows[0].Summary != "2 events → BigQuery (signup×2)" {
+		t.Fatalf("events activity: %+v", evRows)
+	}
+
+	// Activity about activity is never recorded (it would loop forever).
+	if n := len(e.ps.take("activity")); n != 0 {
+		t.Fatalf("storing activity produced %d new activity messages", n)
 	}
 }

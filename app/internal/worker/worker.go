@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/asyncsvc/internal/activity"
 	"github.com/example/asyncsvc/internal/blob"
 	"github.com/example/asyncsvc/internal/export"
 	"github.com/example/asyncsvc/internal/httpx"
@@ -45,6 +46,15 @@ type Worker struct {
 
 	// MaxAttempts must match the reports subscription's max delivery attempts.
 	MaxAttempts int
+	// EmailMaxAttempts must match the emails subscription's max delivery
+	// attempts (used to tell "will retry" from "dead-lettered").
+	EmailMaxAttempts int
+
+	// Activity records message lifecycle events; ActivitySink stores the
+	// events delivered by the activity subscription (Firestore).
+	Activity     *activity.Recorder
+	ActivitySink activity.Sink
+	TopicReports string
 	// GenerateTimeout bounds one report run.
 	GenerateTimeout time.Duration
 	// StaleAfter: a report "running" longer than this is assumed abandoned
@@ -58,8 +68,10 @@ func (wk *Worker) Routes() http.Handler {
 	mux.HandleFunc("GET /health", httpx.Health)
 	mux.HandleFunc("GET /healthz", httpx.Health)
 	mux.HandleFunc("GET /version", version.Handler)
-	mux.HandleFunc("POST /pubsub/reports", wk.push(wk.Handle(wk.HandleReport)))
-	mux.HandleFunc("POST /pubsub/emails", wk.push(wk.Handle(wk.HandleEmail)))
+	mux.HandleFunc("POST /pubsub/reports", wk.push(wk.ReportHandler()))
+	mux.HandleFunc("POST /pubsub/emails", wk.push(wk.EmailHandler()))
+	// Not wrapped in Handle: recording activity about activity would loop.
+	mux.HandleFunc("POST /pubsub/activity", wk.push(wk.HandleActivity))
 	mux.HandleFunc("POST /tasks/relay-outbox", wk.relayOutbox)
 	return mux
 }
@@ -67,21 +79,73 @@ func (wk *Worker) Routes() http.Handler {
 // errRetryLater nacks without logging an error.
 var errRetryLater = errors.New("retry later")
 
-// Handle wraps a message handler with logging. Used for both push and pull.
-func (wk *Worker) Handle(h pubsubx.Handler) pubsubx.Handler {
+// ReportHandler and EmailHandler are the instrumented handlers for the two
+// work subscriptions, used for both push and pull.
+func (wk *Worker) ReportHandler() pubsubx.Handler {
+	return wk.Handle(wk.TopicReports, wk.MaxAttempts, wk.HandleReport)
+}
+
+func (wk *Worker) EmailHandler() pubsubx.Handler {
+	return wk.Handle(wk.TopicEmails, wk.EmailMaxAttempts, wk.HandleEmail)
+}
+
+// Handle wraps a message handler with logging and activity recording:
+// received, then acked / retrying / nacked / dead_lettered.
+func (wk *Worker) Handle(topic string, maxAttempts int, h pubsubx.Handler) pubsubx.Handler {
 	return func(ctx context.Context, d pubsubx.Delivery) error {
+		summary, reportID := activity.Describe(d.Data)
+		base := messages.Activity{
+			Topic: topic, Subscription: d.Subscription, MessageID: d.MessageID,
+			OutboxID: d.Attributes[messages.AttrOutboxID], Attempt: int64(d.Attempt),
+			Summary: summary, ReportID: reportID,
+		}
+		rec := func(kind string, start time.Time, err error) {
+			a := base
+			a.Kind = kind
+			if !start.IsZero() {
+				a.DurationMs = time.Since(start).Milliseconds()
+			}
+			if err != nil && !errors.Is(err, errRetryLater) {
+				a.Error = err.Error()
+			}
+			wk.Activity.Record(a)
+		}
+
+		rec(messages.ActivityReceived, time.Time{}, nil)
+		start := time.Now()
 		err := h(ctx, d)
 		if err == nil {
+			rec(messages.ActivityAcked, start, nil)
 			return nil
 		}
+
 		log := slog.With("message_id", d.MessageID, "attempt", d.Attempt, "subscription", d.Subscription)
-		if errors.Is(err, errRetryLater) {
+		switch {
+		case errors.Is(err, errRetryLater):
 			log.InfoContext(ctx, "nack: retry later")
-		} else {
+			rec(messages.ActivityRetrying, start, err)
+		case maxAttempts > 0 && d.Attempt >= maxAttempts:
+			log.ErrorContext(ctx, "nack: final attempt failed; dead-lettering", "err", err)
+			rec(messages.ActivityDeadLettered, start, err)
+		default:
 			log.ErrorContext(ctx, "nack: handler failed", "err", err)
+			rec(messages.ActivityNacked, start, err)
 		}
 		return err
 	}
+}
+
+// HandleActivity stores an activity event for the admin Activity page.
+func (wk *Worker) HandleActivity(ctx context.Context, d pubsubx.Delivery) error {
+	if wk.ActivitySink == nil {
+		return nil
+	}
+	var a messages.Activity
+	if err := json.Unmarshal(d.Data, &a); err != nil || a.Kind == "" || a.Topic == "" {
+		slog.WarnContext(ctx, "bad activity message; dropping", "err", err)
+		return nil
+	}
+	return wk.ActivitySink.Write(ctx, a)
 }
 
 // push adapts a handler to a Pub/Sub push HTTP endpoint.

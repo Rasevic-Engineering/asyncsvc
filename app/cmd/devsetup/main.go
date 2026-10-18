@@ -35,7 +35,7 @@ func main() {
 	topic := func(id string) string { return fmt.Sprintf("projects/%s/topics/%s", project, id) }
 	sub := func(id string) string { return fmt.Sprintf("projects/%s/subscriptions/%s", project, id) }
 
-	for _, t := range []string{"report-requests", "email-requests", "events", "dead-letter"} {
+	for _, t := range []string{"report-requests", "email-requests", "events", "activity", "dead-letter"} {
 		_, err := c.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: topic(t)})
 		check(err, "topic "+t)
 	}
@@ -55,11 +55,16 @@ func main() {
 				Name: sub("emails-push"), Topic: topic("email-requests"), AckDeadlineSeconds: 60, RetryPolicy: retry,
 				PushConfig: &pubsubpb.PushConfig{PushEndpoint: workerURL + "/pubsub/emails"},
 			},
+			{
+				Name: sub("activity-push"), Topic: topic("activity"), AckDeadlineSeconds: 30, RetryPolicy: retry,
+				PushConfig: &pubsubpb.PushConfig{PushEndpoint: workerURL + "/pubsub/activity"},
+			},
 		}
 	case "pull":
 		subs = []*pubsubpb.Subscription{
 			{Name: sub("reports-pull"), Topic: topic("report-requests"), AckDeadlineSeconds: 60, RetryPolicy: retry},
 			{Name: sub("emails-pull"), Topic: topic("email-requests"), AckDeadlineSeconds: 60, RetryPolicy: retry},
+			{Name: sub("activity-pull"), Topic: topic("activity"), AckDeadlineSeconds: 30, RetryPolicy: retry},
 		}
 	default:
 		log.Fatalf("WORKER_MODE must be push or pull, got %q", mode)

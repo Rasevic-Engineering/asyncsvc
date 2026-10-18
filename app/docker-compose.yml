@@ -34,9 +34,9 @@ services:
     # sign-ins; tokens are unsigned and only accepted when the API has
     # FIREBASE_AUTH_EMULATOR_HOST set.
     build: ./firebase
-    ports: ["9099:9099"]
+    ports: ["9099:9099", "8088:8088"] # Auth, Firestore
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9099/ >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9099/ >/dev/null && wget -qO- http://127.0.0.1:8088/ >/dev/null || exit 1"]
       interval: 2s
       retries: 60
 
@@ -67,6 +67,7 @@ services:
       WEB_GOOGLE_SIGN_IN: "true"                   # the emulator fakes Google sign-in
       ADMIN_EMAILS: admin@example.com
       AUTH_TRUST_UNVERIFIED_EMAIL: "true"          # emulator only: skip email verification
+      WEB_FIRESTORE_EMULATOR_HOST: localhost:8088  # admin Activity feed (browser)
     ports: ["8080:8080"]
     volumes: [reports:/data/reports]
     depends_on:
@@ -83,6 +84,8 @@ services:
       REPORT_SOURCE: fake
       MAIL_PROVIDER: log
       PUBLIC_API_URL: http://localhost:8080
+      FIREBASE_PROJECT_ID: demo-asyncsvc
+      FIRESTORE_EMULATOR_HOST: firebase:8088       # worker writes the Activity feed here
       # Pull mode runs the outbox sweep in-process (GKE); push mode relies on
       # Cloud Scheduler, which doesn't exist locally, so sweep here too.
       OUTBOX_SWEEP_INTERVAL: 15s
@@ -90,6 +93,7 @@ services:
     volumes: [reports:/data/reports]
     depends_on:
       postgres: { condition: service_healthy }
+      firebase: { condition: service_healthy }
       devsetup: { condition: service_completed_successfully }
 
 volumes:

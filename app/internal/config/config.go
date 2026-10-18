@@ -38,6 +38,11 @@ type Config struct {
 	TopicReports string
 	TopicEmails  string
 	TopicEvents  string
+	// Message lifecycle events for the admin Activity page; empty disables.
+	TopicActivity string
+	SubActivity   string
+	// Must match the emails subscription's max delivery attempts.
+	EmailMaxAttempts int
 
 	// Report output: GCS bucket in the cloud, local directory for development.
 	ReportsBucket string
@@ -68,6 +73,8 @@ type Config struct {
 	WebFirebaseDomain    string
 	WebAuthEmulatorURL   string
 	WebGoogleSignIn      bool
+	// Browser-facing Firestore emulator address (local development only).
+	WebFirestoreEmulatorHost string
 	// <project>.firebaseapp.com to proxy /__/auth/ to, when the web app uses
 	// this service's own domain as its Firebase authDomain.
 	FirebaseHandlerHost string
@@ -78,32 +85,36 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{
-		Port:                env("PORT", "8080"),
-		Project:             env("GCP_PROJECT", "local"),
-		TopicReports:        env("TOPIC_REPORTS", "report-requests"),
-		TopicEmails:         env("TOPIC_EMAILS", "email-requests"),
-		TopicEvents:         env("TOPIC_EVENTS", "events"),
-		ReportsBucket:       os.Getenv("REPORTS_BUCKET"),
-		ReportsDir:          env("REPORTS_DIR", "/tmp/reports"),
-		ReportSource:        env("REPORT_SOURCE", "bigquery"),
-		BQDataset:           env("BQ_DATASET", "analytics"),
-		BQEventsTable:       env("BQ_EVENTS_TABLE", "events"),
-		BQLocation:          env("BQ_LOCATION", "US"),
-		MailProvider:        env("MAIL_PROVIDER", "log"),
-		MailFrom:            env("MAIL_FROM", "reports@example.com"),
-		SendGridAPIKey:      os.Getenv("SENDGRID_API_KEY"),
-		WebDir:              os.Getenv("WEB_DIR"),
-		WebFirebaseAPIKey:   os.Getenv("WEB_FIREBASE_API_KEY"),
-		WebFirebaseDomain:   os.Getenv("WEB_FIREBASE_AUTH_DOMAIN"),
-		WebAuthEmulatorURL:  os.Getenv("WEB_AUTH_EMULATOR_URL"),
-		FirebaseHandlerHost: os.Getenv("FIREBASE_AUTH_HANDLER_HOST"),
-		PublicAPIURL:        strings.TrimRight(env("PUBLIC_API_URL", "http://localhost:8080"), "/"),
-		ReportsMaxAttempts:  10,
-		DBInstance:          os.Getenv("DB_INSTANCE_CONNECTION_NAME"),
-		WorkerMode:          env("WORKER_MODE", "push"),
-		SubReports:          env("SUB_REPORTS", "reports-pull"),
-		SubEmails:           env("SUB_EMAILS", "emails-pull"),
-		PullMaxOutstanding:  8,
+		Port:                     env("PORT", "8080"),
+		Project:                  env("GCP_PROJECT", "local"),
+		TopicReports:             env("TOPIC_REPORTS", "report-requests"),
+		TopicEmails:              env("TOPIC_EMAILS", "email-requests"),
+		TopicEvents:              env("TOPIC_EVENTS", "events"),
+		TopicActivity:            env("TOPIC_ACTIVITY", "activity"),
+		SubActivity:              env("SUB_ACTIVITY", "activity-pull"),
+		EmailMaxAttempts:         5,
+		ReportsBucket:            os.Getenv("REPORTS_BUCKET"),
+		ReportsDir:               env("REPORTS_DIR", "/tmp/reports"),
+		ReportSource:             env("REPORT_SOURCE", "bigquery"),
+		BQDataset:                env("BQ_DATASET", "analytics"),
+		BQEventsTable:            env("BQ_EVENTS_TABLE", "events"),
+		BQLocation:               env("BQ_LOCATION", "US"),
+		MailProvider:             env("MAIL_PROVIDER", "log"),
+		MailFrom:                 env("MAIL_FROM", "reports@example.com"),
+		SendGridAPIKey:           os.Getenv("SENDGRID_API_KEY"),
+		WebDir:                   os.Getenv("WEB_DIR"),
+		WebFirebaseAPIKey:        os.Getenv("WEB_FIREBASE_API_KEY"),
+		WebFirebaseDomain:        os.Getenv("WEB_FIREBASE_AUTH_DOMAIN"),
+		WebAuthEmulatorURL:       os.Getenv("WEB_AUTH_EMULATOR_URL"),
+		WebFirestoreEmulatorHost: os.Getenv("WEB_FIRESTORE_EMULATOR_HOST"),
+		FirebaseHandlerHost:      os.Getenv("FIREBASE_AUTH_HANDLER_HOST"),
+		PublicAPIURL:             strings.TrimRight(env("PUBLIC_API_URL", "http://localhost:8080"), "/"),
+		ReportsMaxAttempts:       10,
+		DBInstance:               os.Getenv("DB_INSTANCE_CONNECTION_NAME"),
+		WorkerMode:               env("WORKER_MODE", "push"),
+		SubReports:               env("SUB_REPORTS", "reports-pull"),
+		SubEmails:                env("SUB_EMAILS", "emails-pull"),
+		PullMaxOutstanding:       8,
 	}
 
 	var err error
@@ -130,6 +141,13 @@ func Load() (Config, error) {
 		c.PullMaxOutstanding = n
 	}
 
+	if v := os.Getenv("EMAIL_MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return c, fmt.Errorf("invalid EMAIL_MAX_ATTEMPTS %q", v)
+		}
+		c.EmailMaxAttempts = n
+	}
 	if v := os.Getenv("REPORTS_MAX_ATTEMPTS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {

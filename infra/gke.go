@@ -158,6 +158,9 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	if err := pullSub("emails-pull", s.emailsTopic, 60, emailsMaxAttempts); err != nil {
 		return err
 	}
+	if err := pullSub("activity-pull", s.activityTopic, 30, emailsMaxAttempts); err != nil {
+		return err
+	}
 
 	// ---- Workloads --------------------------------------------------
 	commonEnv := corev1.EnvVarArray{
@@ -169,6 +172,7 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 		k8sEnv("TOPIC_REPORTS", s.reportsTopic.Name),
 		k8sEnv("TOPIC_EMAILS", s.emailsTopic.Name),
 		k8sEnv("TOPIC_EVENTS", s.eventsTopic.Name),
+		k8sEnv("TOPIC_ACTIVITY", s.activityTopic.Name),
 		k8sEnv("REPORTS_BUCKET", s.bucket.Name),
 		k8sEnv("IMAGE", s.image), // reported by GET /version
 	}
@@ -270,6 +274,8 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 		k8sEnv("WORKER_MODE", pulumi.String("pull")),
 		k8sEnv("SUB_REPORTS", pulumi.String("reports-pull")),
 		k8sEnv("SUB_EMAILS", pulumi.String("emails-pull")),
+		k8sEnv("SUB_ACTIVITY", pulumi.String("activity-pull")),
+		k8sEnv("EMAIL_MAX_ATTEMPTS", pulumi.Sprintf("%d", emailsMaxAttempts)),
 		k8sEnv("OUTBOX_SWEEP_INTERVAL", pulumi.String("30s")),
 		k8sEnv("REPORT_SOURCE", pulumi.String("bigquery")),
 		k8sEnv("BQ_DATASET", s.dataset.DatasetId),
