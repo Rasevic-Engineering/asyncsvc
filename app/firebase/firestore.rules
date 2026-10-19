@@ -3,7 +3,7 @@ rules_version = '2';
 // local admin). Locally, emails aren't verified, matching the API's
 // AUTH_TRUST_UNVERIFIED_EMAIL in docker-compose.
 
-// Firestore is only used for the admin Activity feed. Browsers may read it
+// Firestore holds the admin Activity feed and Live data status. Browsers may read them
 // when they're an admin; nobody may write from a browser (the worker writes
 // with its service account, which bypasses rules).
 service cloud.firestore {
@@ -16,6 +16,12 @@ service cloud.firestore {
     }
 
     match /activity/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Live data ingestion status (NHL games, soccer replays).
+    match /ingest/{id} {
       allow read: if isAdmin();
       allow write: if false;
     }

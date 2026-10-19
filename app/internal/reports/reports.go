@@ -26,7 +26,7 @@ const (
 
 // Kinds are the report types callers may request. Each maps to a query in
 // the BigQuery source.
-var Kinds = []string{"events_by_type", "daily_active_users", "raw_events"}
+var Kinds = []string{"events_by_type", "daily_active_users", "raw_events", "sports_activity", "shots_by_team"}
 
 const dateLayout = "2006-01-02"
 
@@ -107,6 +107,8 @@ var KindLabels = map[string]string{
 	"events_by_type":     "Events by type",
 	"daily_active_users": "Daily active users",
 	"raw_events":         "Raw events",
+	"sports_activity":    "Sports activity",
+	"shots_by_team":      "Shots by team",
 }
 
 // Owner identifies who requested a report.

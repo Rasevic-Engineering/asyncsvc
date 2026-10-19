@@ -238,7 +238,7 @@ func setup(t *testing.T) *env {
 	e.api = httptest.NewServer((&api.Server{
 		Pool: pool, Reports: repo, Relay: e.relay, Pub: e.ps, Store: store,
 		TopicReports: "report-requests", TopicEvents: "events", WebDir: webDir,
-		Auth: users, Web: webCfg, Activity: rec("api"),
+		Auth: users, Web: webCfg, Activity: rec("api"), TopicIngestCommands: "ingest-commands",
 	}).Routes())
 	t.Cleanup(e.api.Close)
 
@@ -720,5 +720,57 @@ func TestActivityFeed(t *testing.T) {
 	// Activity about activity is never recorded (it would loop forever).
 	if n := len(e.ps.take("activity")); n != 0 {
 		t.Fatalf("storing activity produced %d new activity messages", n)
+	}
+}
+
+func TestReplayCommands(t *testing.T) {
+	e := setup(t)
+
+	resp, b := e.call("GET", "/v1/admin/replays/catalog", "admin-token", "")
+	if resp.StatusCode != 200 || !strings.Contains(string(b), `"match_id":3869685`) || !strings.Contains(string(b), `"speeds":[1,5,10,30,60]`) {
+		t.Fatalf("catalog: %d %s", resp.StatusCode, b)
+	}
+
+	resp, b = e.call("POST", "/v1/admin/replays", "admin-token", `{"match_id":3869685,"speed":10}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d %s", resp.StatusCode, b)
+	}
+	var started struct {
+		ReplayID string `json:"replay_id"`
+	}
+	json.Unmarshal(b, &started)
+	cmd := e.one("ingest-commands")
+	var c messages.IngestCommand
+	json.Unmarshal(cmd.data, &c)
+	if c.Action != "replay" || c.MatchID != 3869685 || c.Speed != 10 || c.ReplayID != started.ReplayID || c.RequestedBy != "admin@example.com" {
+		t.Fatalf("command: %+v", c)
+	}
+
+	if resp, _ := e.call("POST", "/v1/admin/replays/"+started.ReplayID+"/stop", "admin-token", ""); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	json.Unmarshal(e.one("ingest-commands").data, &c)
+	if c.Action != "stop" || c.ReplayID != started.ReplayID {
+		t.Fatalf("stop command: %+v", c)
+	}
+
+	for _, body := range []string{`{"match_id":1,"speed":10}`, `{"match_id":3869685,"speed":7}`, `nope`} {
+		if resp, _ := e.call("POST", "/v1/admin/replays", "admin-token", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", body, resp.StatusCode)
+		}
+	}
+	if resp, _ := e.call("POST", "/v1/admin/replays/not-a-uuid/stop", "admin-token", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("bad replay id: want 404, got %d", resp.StatusCode)
+	}
+	// Admin only.
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/v1/admin/replays/catalog"}, {"POST", "/v1/admin/replays"},
+	} {
+		if resp, _ := e.call(c.method, c.path, "alice-token", `{"match_id":3869685,"speed":10}`); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("non-admin %s %s: want 403, got %d", c.method, c.path, resp.StatusCode)
+		}
+	}
+	if n := len(e.ps.take("ingest-commands")); n != 0 {
+		t.Fatalf("rejected requests published %d commands", n)
 	}
 }

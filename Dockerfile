@@ -1,4 +1,4 @@
-# One image: the Next.js static export plus three Go binaries (/bin/api, /bin/worker,
+# One image: the Next.js static export plus the Go binaries (/bin/api, /bin/worker,
 # /bin/devsetup). Cloud Run / Kubernetes choose the binary via the command.
 # Build context is the repo root.
 
@@ -20,6 +20,7 @@ ARG GIT_SHA=dev
 RUN LDFLAGS="-s -w -X github.com/example/asyncsvc/internal/version.Commit=${GIT_SHA}" \
  && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/api ./cmd/api \
  && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/worker ./cmd/worker \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/ingester ./cmd/ingester \
  && CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o /out/devsetup ./cmd/devsetup \
  && mkdir -p /data/reports
 

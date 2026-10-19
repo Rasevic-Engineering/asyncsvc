@@ -17,6 +17,7 @@ import (
 
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/artifactregistry"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/bigquery"
+	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/firestore"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/projects"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/pubsub"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/secretmanager"
@@ -73,6 +74,8 @@ type settings struct {
 	image              string
 	customDomain       string       // e.g. asyncsvc.example.com; Cloud Run only
 	github             githubDeploy // repository empty = no CI deploy access
+	ingesterEnabled    bool         // run the live sports ingester (1 instance, always on)
+	ingesterNHL        bool         // poll live NHL games (replays work either way)
 
 	// Auth.
 	adminEmails        string // comma-separated
@@ -108,6 +111,9 @@ type shared struct {
 
 	reportsTopic, emailsTopic, eventsTopic, deadLetterTopic *pubsub.Topic
 	activityTopic                                           *pubsub.Topic
+	ingestCommandsTopic                                     *pubsub.Topic
+	firestoreDB                                             *firestore.Database
+	ingesterSA                                              *serviceaccount.Account
 
 	fb *firebaseAuth
 }
@@ -182,6 +188,13 @@ func loadSettings(ctx *pulumi.Context) (settings, error) {
 	}
 	if st.customDomain != "" && st.platform != "cloudrun" {
 		return st, fmt.Errorf("asyncsvc:customDomain is only supported with platform=cloudrun (on GKE, use a Gateway with a managed certificate)")
+	}
+	st.ingesterEnabled, st.ingesterNHL = true, true
+	if v, err := cfg.TryBool("ingesterEnabled"); err == nil {
+		st.ingesterEnabled = v
+	}
+	if v, err := cfg.TryBool("ingesterNhl"); err == nil {
+		st.ingesterNHL = v
 	}
 	if v, err := cfg.TryBool("publicApi"); err == nil {
 		st.publicAPI = v
@@ -451,7 +464,10 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
   {"name": "user_id",     "type": "STRING",    "mode": "REQUIRED"},
   {"name": "occurred_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
   {"name": "received_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
-  {"name": "properties",  "type": "STRING",    "mode": "NULLABLE", "description": "JSON-encoded object"}
+  {"name": "properties",  "type": "STRING",    "mode": "NULLABLE", "description": "JSON-encoded object"},
+  {"name": "source",      "type": "STRING",    "mode": "NULLABLE", "description": "api, nhl or statsbomb"},
+  {"name": "game_id",     "type": "STRING",    "mode": "NULLABLE", "description": "e.g. nhl:2026020135, statsbomb:3869685"},
+  {"name": "team",        "type": "STRING",    "mode": "NULLABLE"}
 ]`),
 	})
 	if err != nil {
@@ -548,6 +564,9 @@ func buildShared(ctx *pulumi.Context, st settings) (*shared, error) {
 		return nil, err
 	}
 	if err := s.setupActivity(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.setupIngester(ctx); err != nil {
 		return nil, err
 	}
 

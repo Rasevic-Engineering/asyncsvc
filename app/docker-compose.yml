@@ -66,6 +66,7 @@ services:
       WEB_FIREBASE_AUTH_DOMAIN: localhost
       WEB_GOOGLE_SIGN_IN: "true"                   # the emulator fakes Google sign-in
       ADMIN_EMAILS: admin@example.com
+      TOPIC_INGEST_COMMANDS: ingest-commands
       AUTH_TRUST_UNVERIFIED_EMAIL: "true"          # emulator only: skip email verification
       WEB_FIRESTORE_EMULATOR_HOST: localhost:8088  # admin Activity feed (browser)
     ports: ["8080:8080"]
@@ -93,6 +94,24 @@ services:
     volumes: [reports:/data/reports]
     depends_on:
       postgres: { condition: service_healthy }
+      firebase: { condition: service_healthy }
+      devsetup: { condition: service_completed_successfully }
+
+  ingester:
+    # Live sports data: NHL play-by-play (real NHL API) and StatsBomb replays
+    # started from the admin Live data page. Events go to the emulator's
+    # events topic (there's no BigQuery locally; see events-debug).
+    build: { context: .., dockerfile: Dockerfile }
+    entrypoint: ["/bin/ingester"]
+    environment:
+      GCP_PROJECT: local
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      FIREBASE_PROJECT_ID: demo-asyncsvc
+      FIRESTORE_EMULATOR_HOST: firebase:8088
+      PORT: "8082"
+      # NHL_ENABLED: "false"   # turn off live NHL polling locally
+    ports: ["8082:8082"]
+    depends_on:
       firebase: { condition: service_healthy }
       devsetup: { condition: service_completed_successfully }
 

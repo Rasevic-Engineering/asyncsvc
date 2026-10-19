@@ -115,6 +115,10 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	if err != nil {
 		return err
 	}
+	ingesterKSA, err := ksa("ingester", s.ingesterSA)
+	if err != nil {
+		return err
+	}
 
 	// Secret Manager stays the source of truth; Pulumi mirrors the values
 	// into a Kubernetes Secret so pods read them as env vars.
@@ -181,6 +185,7 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	for _, e := range s.apiAuthEnv() {
 		apiEnv = append(apiEnv, k8sEnv(e.name, e.value))
 	}
+	apiEnv = append(apiEnv, k8sEnv("TOPIC_INGEST_COMMANDS", s.ingestCommandsTopic.Name))
 
 	apiLabels := pulumi.StringMap{"app": pulumi.String("api")}
 	apiDeploy, err := appsv1.NewDeployment(ctx, "api", &appsv1.DeploymentArgs{
@@ -329,6 +334,40 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	// bare IP isn't added. Email/password sign-in works regardless; for
 	// Google sign-in, point a domain at the load balancer and add it.
 	if err := s.fb.configureSignIn(ctx, s); err != nil {
+		return err
+	}
+
+	// Live sports ingester: one always-on pod (zero with ingesterEnabled=false).
+	ingEnv := corev1.EnvVarArray{}
+	for _, e := range s.ingesterEnv() {
+		ingEnv = append(ingEnv, k8sEnv(e.name, e.value))
+	}
+	ingLabels := pulumi.StringMap{"app": pulumi.String("ingester")}
+	if _, err := appsv1.NewDeployment(ctx, "ingester", &appsv1.DeploymentArgs{
+		Metadata: &metav1.ObjectMetaArgs{Name: pulumi.String("ingester"), Namespace: pulumi.String(namespace)},
+		Spec: &appsv1.DeploymentSpecArgs{
+			Replicas: pulumi.Int(s.ingesterInstances()),
+			// Never two at once: replays would be streamed twice.
+			Strategy: &appsv1.DeploymentStrategyArgs{Type: pulumi.String("Recreate")},
+			Selector: &metav1.LabelSelectorArgs{MatchLabels: ingLabels},
+			Template: &corev1.PodTemplateSpecArgs{
+				Metadata: &metav1.ObjectMetaArgs{Labels: ingLabels},
+				Spec: podSpec(ingesterKSA, 30, &corev1.ContainerArgs{
+					Name:    pulumi.String("ingester"),
+					Image:   s.image,
+					Command: pulumi.StringArray{pulumi.String("/bin/ingester")},
+					Env:     ingEnv,
+					Ports:   corev1.ContainerPortArray{&corev1.ContainerPortArgs{ContainerPort: pulumi.Int(8080), Name: pulumi.String("http")}},
+					Resources: &corev1.ResourceRequirementsArgs{
+						Requests: pulumi.StringMap{"cpu": pulumi.String("250m"), "memory": pulumi.String("512Mi")},
+						Limits:   pulumi.StringMap{"memory": pulumi.String("512Mi")},
+					},
+					ReadinessProbe: httpProbe(10),
+					LivenessProbe:  httpProbe(30),
+				}),
+			},
+		},
+	}, inK8s, inNS); err != nil {
 		return err
 	}
 

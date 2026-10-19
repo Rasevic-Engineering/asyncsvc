@@ -23,6 +23,12 @@ config:
   asyncsvc:adminEmails:
     type: string
     default: ""         # comma-separated; verified emails that get the admin role
+  asyncsvc:ingesterEnabled:
+    type: boolean
+    default: true       # live sports ingester (NHL + soccer replays): 1 always-on instance, ~$25–50/month
+  asyncsvc:ingesterNhl:
+    type: boolean
+    default: true       # poll live NHL games; false keeps the ingester for soccer replays only
   asyncsvc:customDomain:
     type: string
     default: ""         # e.g. asyncsvc.example.com (Cloud Run domain mapping; verify the domain first)

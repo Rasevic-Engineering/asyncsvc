@@ -8,6 +8,33 @@ A Go REST service that keeps slow work off the request path, a Next.js frontend 
 - **Auth**: Firebase Authentication (Identity Platform). Email/password sign-in, plus Google when an OAuth client is configured. The API verifies the Firebase ID token on every `/v1` request.
 - **Analytics events**: `POST /v1/events` publishes to Pub/Sub, and a **BigQuery subscription** writes the events into a partitioned table. No consumer code is involved.
 
+## Live sports data
+
+A separate **ingester** (`/bin/ingester`) streams real sports data into the same events pipeline, so reports and the Activity feed have live data to process:
+
+| Source | What | How |
+|---|---|---|
+| **NHL** ([public API](https://api-web.nhle.com)) | Every play of every live game: shots with rink coordinates, goals, hits, faceoffs, penalties | Checks the schedule every minute and polls each live game every 10s. Only new plays are published; the position is kept in Firestore, so restarts don't duplicate |
+| **StatsBomb** ([open data](https://github.com/statsbomb/open-data)) | Every on-ball event of a famous match (passes, carries, shots with expected goals, fouls), replayed in its original timing at 1×–60× | Admin starts a replay on the **Live data** page → `POST /v1/admin/replays` → topic `ingest-commands` → ingester. Up to 3 at once; replays **resume after a restart** |
+
+```
+NHL API ◀─poll─┐
+               ingester ──▶ topic "events" ──▶ BigQuery analytics.events (source, game_id, team, properties)
+admin UI ─▶ API ─▶ topic "ingest-commands" ─pull─┘   └─▶ Firestore "ingest" ──▶ Live data page (real time)
+```
+
+- **Event shape:**
+  - `event_type`: `nhl.<play>` (e.g. `nhl.shot-on-goal`) or `soccer.<event>` (e.g. `soccer.pass`);
+  - `user_id`: the player;
+  - `team` and `game_id`;
+  - `properties`: period, clock, coordinates, shot type, outcome, expected goals, …
+
+  Event IDs are deterministic, so a duplicate is easy to spot.
+- **Reports:** *Sports activity* (event counts per game, team and type) and *Shots by team* (shots, on target, goals, expected goals; shootouts excluded).
+- **Runs as:** a **Cloud Run worker pool** (always on, no HTTP traffic), or a `Deployment` on GKE. One instance costs roughly **$50/month**. **To turn it off and on**, or to stop just NHL polling, see **[docs/ingester.md](docs/ingester.md)**.
+- **Locally:** `make dev` runs the ingester too, polling the real NHL API (set `NHL_ENABLED=false` to stop that). Replays work from http://localhost:8080/live.
+- The data is used under the NHL API's and StatsBomb's non-commercial terms. The Live data page credits both.
+
 ## Admin Activity feed
 
 Admins get an **Activity** page (`/activity`) that shows Pub/Sub messages live, as they're published and processed. Each message appears with its topic, a summary, its current state, and a timeline of its stages, with timings and errors.
@@ -304,6 +331,8 @@ curl -si -H "$AUTH" $API/v1/reports -d '{"kind":"events_by_type","from":"2026-10
 | `workerReplicas` | `2` | GKE only |
 | `publicApi` | `true` | Network-level access to the API/UI. The API enforces Firebase auth either way. `false` = IAM-only on Cloud Run, internal load balancer on GKE |
 | `customDomain` | empty | Cloud Run only: serve the app at this hostname through a global HTTPS load balancer with a Google-managed certificate and HTTP→HTTPS redirect (about $18/month). After deploying, create the DNS **A** record from the `customDomainDns` output; the certificate is issued once DNS resolves (15 minutes to a few hours)
+| `ingesterEnabled` | `true` | Run the live sports ingester (1 always-on instance, ~$50/month); `false` scales it to zero. See [docs/ingester.md](docs/ingester.md) |
+| `ingesterNhl` | `true` | `false` stops NHL polling and keeps soccer replays |
 | `githubRepository` / `githubEnvironment` / `githubBranch` | empty / stack name / `main` | Which GitHub Actions runs may deploy this stack (see CI/CD) |
 | `adminEmails` | empty | Comma-separated; these verified emails get the admin role |
 | `googleOAuthClientId` / `googleOAuthClientSecret` (secret) | unset | Enables Google sign-in. Create a "Web application" OAuth client in the console first, with redirect URI `https://<project>.firebaseapp.com/__/auth/handler` |

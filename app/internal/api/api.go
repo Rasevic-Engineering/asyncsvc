@@ -8,6 +8,7 @@
 //	GET  /v1/reports            caller's reports; admins may pass scope=all
 //	GET  /v1/reports/{id}       owner or admin (others get 404)
 //	POST /v1/events             admin only
+//	*    /v1/admin/replays...   admin only (StatsBomb replays)
 //	GET  /v1/me                 any user
 package api
 
@@ -29,6 +30,7 @@ import (
 	"github.com/example/asyncsvc/internal/auth"
 	"github.com/example/asyncsvc/internal/blob"
 	"github.com/example/asyncsvc/internal/httpx"
+	"github.com/example/asyncsvc/internal/ingest"
 	"github.com/example/asyncsvc/internal/messages"
 	"github.com/example/asyncsvc/internal/outbox"
 	"github.com/example/asyncsvc/internal/reports"
@@ -44,6 +46,8 @@ type Server struct {
 	Auth         auth.Verifier
 	TopicReports string
 	TopicEvents  string
+	// Admin commands for the ingester (StatsBomb replays).
+	TopicIngestCommands string
 	// WebDir, if set, holds the built React app, served at "/".
 	WebDir string
 	// Web is the public config the React app loads from /config.json.
@@ -91,6 +95,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/reports", user(s.listReports))
 	mux.HandleFunc("GET /v1/reports/{id}", user(s.getReport))
 	mux.HandleFunc("POST /v1/events", admin(s.ingestEvents))
+	mux.HandleFunc("GET /v1/admin/replays/catalog", admin(s.replayCatalog))
+	mux.HandleFunc("POST /v1/admin/replays", admin(s.startReplay))
+	mux.HandleFunc("POST /v1/admin/replays/{id}/stop", admin(s.stopReplay))
 
 	if s.FirebaseHandlerHost != "" {
 		// Explicit methods: a method-less pattern would conflict with "GET /".
@@ -300,6 +307,7 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
 			UserID:     e.UserID,
 			OccurredAt: occurred.UnixMicro(),
 			ReceivedAt: now.UnixMicro(),
+			Source:     "api",
 		}
 		if len(e.Properties) > 0 && string(e.Properties) != "null" {
 			out[i].Properties = string(e.Properties)
@@ -325,6 +333,63 @@ func (s *Server) ingestEvents(w http.ResponseWriter, r *http.Request) {
 		Summary: summarizeEvents(len(out), types), DurationMs: time.Since(start).Milliseconds(),
 	})
 	httpx.JSON(w, http.StatusAccepted, map[string]any{"accepted": len(ids), "event_ids": ids})
+}
+
+func (s *Server) replayCatalog(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]any{"matches": ingest.Catalog, "speeds": ingest.Speeds})
+}
+
+type startReplayReq struct {
+	MatchID int `json:"match_id"`
+	Speed   int `json:"speed"`
+}
+
+// startReplay asks the ingester to replay a StatsBomb match. The ingester
+// reports progress in Firestore (ingest/replay-<id>), which the admin Live
+// data page listens to.
+func (s *Server) startReplay(w http.ResponseWriter, r *http.Request) {
+	u, _ := auth.FromContext(r.Context())
+	var req startReplayReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if _, ok := ingest.CatalogMatch(req.MatchID); !ok {
+		httpx.Error(w, http.StatusBadRequest, "unknown match_id (see /v1/admin/replays/catalog)")
+		return
+	}
+	if !ingest.ValidSpeed(req.Speed) {
+		httpx.Error(w, http.StatusBadRequest, fmt.Sprintf("speed must be one of %v", ingest.Speeds))
+		return
+	}
+	cmd := messages.IngestCommand{
+		Action: "replay", ReplayID: uuid.NewString(), MatchID: req.MatchID, Speed: req.Speed, RequestedBy: u.Email,
+	}
+	if !s.sendIngestCommand(w, r, cmd) {
+		return
+	}
+	httpx.JSON(w, http.StatusAccepted, map[string]string{"replay_id": cmd.ReplayID})
+}
+
+func (s *Server) stopReplay(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "replay not found")
+		return
+	}
+	if !s.sendIngestCommand(w, r, messages.IngestCommand{Action: "stop", ReplayID: id.String()}) {
+		return
+	}
+	httpx.JSON(w, http.StatusAccepted, map[string]string{"replay_id": id.String()})
+}
+
+func (s *Server) sendIngestCommand(w http.ResponseWriter, r *http.Request, cmd messages.IngestCommand) bool {
+	data, _ := json.Marshal(cmd)
+	if _, err := s.Pub.Publish(r.Context(), s.TopicIngestCommands, data, map[string]string{"action": cmd.Action}); err != nil {
+		s.fail(w, r, err)
+		return false
+	}
+	return true
 }
 
 func summarizeEvents(n int, types map[string]int) string {

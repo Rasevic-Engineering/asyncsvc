@@ -65,6 +65,7 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 	for _, e := range s.apiAuthEnv() {
 		apiEnv = append(apiEnv, runEnv(e.name, e.value))
 	}
+	apiEnv = append(apiEnv, runEnv("TOPIC_INGEST_COMMANDS", s.ingestCommandsTopic.Name))
 
 	apiSvc, err := cloudrunv2.NewService(ctx, "api", &cloudrunv2.ServiceArgs{
 		Name:               pulumi.String(appName + "-api"),
@@ -252,6 +253,10 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		}
 	}
 
+	if err := runIngesterPool(ctx, s); err != nil {
+		return err
+	}
+
 	ctx.Export("apiUrl", publicURL)
 	ctx.Export("runUrl", apiSvc.Uri)
 	ctx.Export("workerUrl", workerSvc.Uri)
@@ -272,4 +277,38 @@ func runSecretEnv(name string, s *secretmanager.Secret) *cloudrunv2.ServiceTempl
 			},
 		},
 	}
+}
+
+// runIngesterPool runs the live sports ingester as a Cloud Run worker pool:
+// always-on instances with no HTTP traffic, suited to long-lived polling
+// and Pub/Sub pull. One instance (zero with ingesterEnabled=false), small.
+func runIngesterPool(ctx *pulumi.Context, s *shared) error {
+	envs := cloudrunv2.WorkerPoolTemplateContainerEnvArray{}
+	for _, e := range s.ingesterEnv() {
+		envs = append(envs, &cloudrunv2.WorkerPoolTemplateContainerEnvArgs{Name: pulumi.String(e.name), Value: e.value})
+	}
+	_, err := cloudrunv2.NewWorkerPool(ctx, "ingester", &cloudrunv2.WorkerPoolArgs{
+		Name:               pulumi.String(appName + "-ingester"),
+		Location:           pulumi.String(s.region),
+		LaunchStage:        pulumi.String("BETA"),
+		DeletionProtection: pulumi.Bool(false),
+		Scaling: &cloudrunv2.WorkerPoolScalingArgs{
+			ScalingMode:         pulumi.String("MANUAL"),
+			ManualInstanceCount: pulumi.Int(s.ingesterInstances()),
+		},
+		Template: &cloudrunv2.WorkerPoolTemplateArgs{
+			ServiceAccount: s.ingesterSA.Email,
+			Containers: cloudrunv2.WorkerPoolTemplateContainerArray{
+				&cloudrunv2.WorkerPoolTemplateContainerArgs{
+					Image:    s.image,
+					Commands: pulumi.StringArray{pulumi.String("/bin/ingester")},
+					Envs:     envs,
+					Resources: &cloudrunv2.WorkerPoolTemplateContainerResourcesArgs{
+						Limits: pulumi.StringMap{"cpu": pulumi.String("1"), "memory": pulumi.String("512Mi")},
+					},
+				},
+			},
+		},
+	}, pulumi.DependsOn(s.apis))
+	return err
 }

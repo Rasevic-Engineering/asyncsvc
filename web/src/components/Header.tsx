@@ -20,6 +20,9 @@ export function Header() {
             <Link href="/activity" aria-current={path?.startsWith("/activity") ? "page" : undefined}>
               Activity
             </Link>
+            <Link href="/live" aria-current={path?.startsWith("/live") ? "page" : undefined}>
+              Live data
+            </Link>
           </nav>
         )}
       </div>

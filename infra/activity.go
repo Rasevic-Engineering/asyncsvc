@@ -110,6 +110,7 @@ func (s *shared) setupActivity(ctx *pulumi.Context) error {
 	if err != nil {
 		return err
 	}
+	s.firestoreDB = db
 
 	// Firestore deletes events once expire_at passes (usually within a day).
 	if _, err := firestore.NewField(ctx, "activity-ttl", &firestore.FieldArgs{
@@ -146,11 +147,14 @@ func (s *shared) setupActivity(ctx *pulumi.Context) error {
 	if err != nil {
 		return err
 	}
+	// The release has a fixed name, so a rules change must delete the old
+	// release before creating the new one (a few seconds without a
+	// release, during which Firestore denies all browser reads).
 	_, err = firebaserules.NewRelease(ctx, "firestore-rules", &firebaserules.ReleaseArgs{
 		Project:     pulumi.String(s.project),
 		Name:        pulumi.String("cloud.firestore"),
 		RulesetName: pulumi.Sprintf("projects/%s/rulesets/%s", s.project, ruleset.Name),
-	}, pulumi.Provider(s.fb.provider))
+	}, pulumi.Provider(s.fb.provider), pulumi.DeleteBeforeReplace(true))
 	return err
 }
 

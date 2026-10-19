@@ -140,6 +140,14 @@ Known gaps and planned improvements, roughly in priority order within each secti
 - [ ] **User management UI** for admins: list users, grant and revoke admin (wrapping `adminctl`), disable accounts.
 - [ ] **Activity feed extras:** search by report ID or email, and a link from a dead-lettered message to the `dead-letter-inspect` subscription.
 
+## Live sports data
+
+- [ ] **Scale the ingester to zero when idle:** run it only around NHL game times (Cloud Scheduler toggling the worker pool's instance count), or as a scheduled Cloud Run Job, instead of 24/7 (~$50/month).
+- [ ] **More sources** on the same pattern: MLB Stats API (pitch-by-pitch), NBA live data, Wikimedia EventStreams.
+- [ ] **NHL play corrections:** the NHL sometimes edits plays after the fact (e.g. reassigning a goal). Only new plays are ingested today; re-check recent plays and publish corrections.
+- [ ] **Replay any StatsBomb match**, not just the curated catalog, by browsing `competitions.json` from the UI.
+- [ ] **Visualizations:** shot maps from the rink and pitch coordinates already in `properties`.
+
 ## Developer experience
 
 - [ ] **Browser end-to-end tests** (Playwright) for sign-in, report request, downloads and the Activity feed, run in CI against the docker-compose stack.

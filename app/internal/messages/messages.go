@@ -25,6 +25,21 @@ type Event struct {
 	OccurredAt int64  `json:"occurred_at"`
 	ReceivedAt int64  `json:"received_at"`
 	Properties string `json:"properties,omitempty"` // JSON-encoded object
+	// Where the event came from: "api" (POST /v1/events), "nhl" (live NHL
+	// play-by-play) or "statsbomb" (soccer match replay).
+	Source string `json:"source,omitempty"`
+	GameID string `json:"game_id,omitempty"` // e.g. nhl:2026020135, statsbomb:3869685
+	Team   string `json:"team,omitempty"`
+}
+
+// IngestCommand is published to the ingest-commands topic by admins and
+// handled by the ingester.
+type IngestCommand struct {
+	Action      string `json:"action"` // "replay" or "stop"
+	ReplayID    string `json:"replay_id"`
+	MatchID     int    `json:"match_id,omitempty"`
+	Speed       int    `json:"speed,omitempty"`
+	RequestedBy string `json:"requested_by,omitempty"`
 }
 
 // AttrOutboxID is the message attribute carrying the outbox row id, which

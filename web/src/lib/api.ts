@@ -32,6 +32,13 @@ export interface NewReport {
   notify: boolean;
 }
 
+export interface ReplayMatch {
+  match_id: number;
+  label: string;
+  competition: string;
+  date: string;
+}
+
 export interface Me {
   uid: string;
   email?: string;
@@ -50,6 +57,8 @@ export const REPORT_KINDS = [
   { value: "events_by_type", label: "Events by type" },
   { value: "daily_active_users", label: "Daily active users" },
   { value: "raw_events", label: "Raw events" },
+  { value: "sports_activity", label: "Sports activity (NHL, soccer replays)" },
+  { value: "shots_by_team", label: "Shots by team (NHL, soccer replays)" },
 ] as const;
 
 export class ApiError extends Error {
@@ -98,6 +107,13 @@ export const api = {
 
   createReport: (r: NewReport) =>
     request<Report>("/v1/reports", { method: "POST", body: JSON.stringify(r) }),
+
+  replayCatalog: () => request<{ matches: ReplayMatch[]; speeds: number[] }>("/v1/admin/replays/catalog"),
+
+  startReplay: (match_id: number, speed: number) =>
+    request<{ replay_id: string }>("/v1/admin/replays", { method: "POST", body: JSON.stringify({ match_id, speed }) }),
+
+  stopReplay: (id: string) => request<{ replay_id: string }>(`/v1/admin/replays/${id}/stop`, { method: "POST" }),
 
   sendEvents: (events: NewEvent[]) =>
     request<{ accepted: number; event_ids: string[] }>("/v1/events", {

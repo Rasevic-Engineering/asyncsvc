@@ -82,6 +82,7 @@ func run() error {
 		Store:               store,
 		TopicReports:        cfg.TopicReports,
 		TopicEvents:         cfg.TopicEvents,
+		TopicIngestCommands: cfg.TopicIngestCommands,
 		WebDir:              cfg.WebDir,
 		Auth:                verifier,
 		Web:                 web,
