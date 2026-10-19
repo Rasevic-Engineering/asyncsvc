@@ -45,6 +45,14 @@ jobs:
           go vet -tags integration ./...
           go test ./...
 
+      # The Postgres binary comes from Maven Central; any bad response there
+      # fails every integration test, so download it once and keep it.
+      - name: Cache embedded Postgres
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/embedded-postgres
+          key: embedded-postgres-${{ runner.os }}-${{ hashFiles('app/go.sum') }}
+
       - name: Integration tests (embedded Postgres)
         working-directory: app
         run: go test -tags integration ./internal/e2e/ -count=1
