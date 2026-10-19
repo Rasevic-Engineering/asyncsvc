@@ -135,10 +135,11 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	}
 
 	// ---- Pull subscriptions -----------------------------------------
-	pullSub := func(name string, topic *pubsub.Topic, ackDeadline, maxAttempts int) error {
+	pullSub := func(name string, topic *pubsub.Topic, ackDeadline, maxAttempts int, filter string) error {
 		sub, err := pubsub.NewSubscription(ctx, name, &pubsub.SubscriptionArgs{
 			Name:               pulumi.String(name),
 			Topic:              topic.Name,
+			Filter:             optFilter(filter),
 			AckDeadlineSeconds: pulumi.Int(ackDeadline),
 			ExpirationPolicy:   &pubsub.SubscriptionExpirationPolicyArgs{Ttl: pulumi.String("")},
 			RetryPolicy:        retryPolicy(),
@@ -156,13 +157,17 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 	}
 	// The client library extends deadlines while a handler runs, so these
 	// are just the initial lease.
-	if err := pullSub("reports-pull", s.reportsTopic, 600, reportsMaxAttempts); err != nil {
+	if err := pullSub("reports-pull", s.reportsTopic, 600, reportsMaxAttempts, ""); err != nil {
 		return err
 	}
-	if err := pullSub("emails-pull", s.emailsTopic, 60, emailsMaxAttempts); err != nil {
+	if err := pullSub("emails-pull", s.emailsTopic, 60, emailsMaxAttempts, ""); err != nil {
 		return err
 	}
-	if err := pullSub("activity-pull", s.activityTopic, 30, emailsMaxAttempts); err != nil {
+	if err := pullSub("activity-pull", s.activityTopic, 30, emailsMaxAttempts, ""); err != nil {
+		return err
+	}
+	// Live plays for the admin Live data page (see cloudrun.go).
+	if err := pullSub("plays-pull", s.eventsTopic, 30, emailsMaxAttempts, uiEventsFilter); err != nil {
 		return err
 	}
 
@@ -280,6 +285,7 @@ func deployGKE(ctx *pulumi.Context, s *shared) error {
 		k8sEnv("SUB_REPORTS", pulumi.String("reports-pull")),
 		k8sEnv("SUB_EMAILS", pulumi.String("emails-pull")),
 		k8sEnv("SUB_ACTIVITY", pulumi.String("activity-pull")),
+		k8sEnv("SUB_PLAYS", pulumi.String("plays-pull")),
 		k8sEnv("EMAIL_MAX_ATTEMPTS", pulumi.Sprintf("%d", emailsMaxAttempts)),
 		k8sEnv("OUTBOX_SWEEP_INTERVAL", pulumi.String("30s")),
 		k8sEnv("REPORT_SOURCE", pulumi.String("bigquery")),

@@ -2,15 +2,25 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api, type ReplayMatch } from "@/lib/api";
-import { isLive, sortGames, subscribeIngest, type NHLGame, type Replay } from "@/lib/ingest";
+import {
+  SPORTS,
+  subscribeIngest,
+  subscribePlays,
+  todaysGames,
+  type GameDoc,
+  type PlayDoc,
+  type Replay,
+  type SportId,
+} from "@/lib/ingest";
 import { relativeTime } from "@/lib/format";
 
-const DAY = 24 * 60 * 60 * 1000;
-
+// Admin Live data page: one pane per sport (scoreboard + live event stream)
+// and one for soccer replays. Everything updates in real time from Firestore.
 export function LiveData() {
-  const [games, setGames] = useState<NHLGame[] | null>(null);
+  const [games, setGames] = useState<GameDoc[] | null>(null);
   const [replays, setReplays] = useState<Replay[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [, tick] = useState(0);
 
   useEffect(
@@ -21,117 +31,185 @@ export function LiveData() {
           setReplays(r);
           setError(null);
         },
-        (err) =>
-          setError(
-            err.message.includes("permission")
-              ? "You don't have access to live data. If you were just made an admin, sign out and back in."
-              : err.message,
-          ),
+        (err) => setError(friendly(err)),
       ),
     [],
   );
   useEffect(() => {
-    const id = window.setInterval(() => tick((n) => n + 1), 5000);
+    const id = window.setInterval(() => tick((n) => n + 1), 10000);
     return () => window.clearInterval(id);
   }, []);
 
-  // Today's slate: games starting within the last 18h or the next 24h.
   const now = Date.now();
-  const todays = useMemo(
-    () =>
-      sortGames(
-        (games ?? []).filter((g) => {
-          const t = g.start_time ? Date.parse(g.start_time) : g.updated_at.getTime();
-          return t > now - 0.75 * DAY && t < now + DAY;
-        }),
-      ),
+  const bySport = useMemo(
+    () => Object.fromEntries(SPORTS.map((s) => [s.id, todaysGames(games ?? [], s.id, now)])) as Record<SportId, GameDoc[]>,
     [games, now],
   );
+  const liveTotal = SPORTS.reduce((n, s) => n + bySport[s.id].filter((g) => g.state === "live").length, 0);
 
   return (
     <div className="stack">
+      <div className="live-summary">
+        <span className={`live ${liveTotal ? "on" : "paused"}`}>
+          <span className="dot" aria-hidden /> {liveTotal ? `${liveTotal} games live` : "No games live right now"}
+        </span>
+        <span className="muted small">
+          {SPORTS.map((s) => `${s.label} ${bySport[s.id].filter((g) => g.state === "live").length}`).join(" · ")}
+        </span>
+      </div>
       {error && (
         <p className="alert" role="alert">
           {error}
         </p>
       )}
-      <NHLPanel games={todays} loading={games === null && !error} />
-      <ReplayPanel replays={replays} />
+      <div className="panes">
+        {SPORTS.map((s) => (
+          <SportPane
+            key={s.id}
+            sport={s}
+            games={bySport[s.id]}
+            loading={games === null && !error}
+            expanded={expanded === s.id}
+            onExpand={() => setExpanded(expanded === s.id ? null : s.id)}
+          />
+        ))}
+        <ReplayPanel
+          replays={replays}
+          expanded={expanded === "replays"}
+          onExpand={() => setExpanded(expanded === "replays" ? null : "replays")}
+        />
+      </div>
     </div>
   );
 }
 
-function NHLPanel({ games, loading }: { games: NHLGame[]; loading: boolean }) {
-  const live = games.filter(isLive).length;
+function friendly(err: Error) {
+  return err.message.includes("permission")
+    ? "You don't have access to live data. If you were just made an admin, sign out and back in."
+    : err.message;
+}
+
+function SportPane({
+  sport,
+  games,
+  loading,
+  expanded,
+  onExpand,
+}: {
+  sport: (typeof SPORTS)[number];
+  games: GameDoc[];
+  loading: boolean;
+  expanded: boolean;
+  onExpand: () => void;
+}) {
+  const [filter, setFilter] = useState<string | null>(null);
+  const live = games.filter((g) => g.state === "live").length;
+  const next = games.find((g) => g.state === "scheduled");
+
   return (
-    <section className="card">
+    <section className={`card pane ${expanded ? "pane-wide" : ""}`} aria-label={`${sport.label} live data`}>
       <div className="card-head">
-        <h2>NHL · live play-by-play</h2>
-        <span className={`live ${live ? "on" : "paused"}`}>
-          <span className="dot" aria-hidden /> {live ? `${live} live` : "No games live"}
-        </span>
+        <h2>
+          {sport.icon} {sport.label}
+        </h2>
+        <div className="card-head-right">
+          <span className={`live ${live ? "on" : "paused"}`}>
+            <span className="dot" aria-hidden /> {live ? `${live} live` : "None live"}
+          </span>
+          <button className="link" onClick={onExpand}>
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
       </div>
-      <p className="muted small">
-        The ingester checks the schedule every minute and polls each live game every 10 seconds; new plays
-        flow into BigQuery as <code>nhl.*</code> events.
-      </p>
+
       {loading && <p className="muted">Connecting…</p>}
-      {!loading && games.length === 0 && (
-        <div className="empty">
-          <p>No NHL games today.</p>
-          <p className="muted">Start a soccer replay below for live data any time.</p>
-        </div>
-      )}
+      {!loading && games.length === 0 && <p className="muted small">No games today.</p>}
       {games.length > 0 && (
-        <div className="games">
-          {games.map((g) => (
-            <div key={g.id} className={`game ${isLive(g) ? "game-live" : ""}`}>
-              <div className="game-teams">
-                <div className="game-row">
-                  <span className="team">{g.away}</span>
-                  <span className="score">{g.away_score ?? "–"}</span>
-                </div>
-                <div className="game-row">
-                  <span className="team">{g.home}</span>
-                  <span className="score">{g.home_score ?? "–"}</span>
-                </div>
-              </div>
-              <div className="game-meta small">
-                <GameStatus g={g} />
-                {g.away_sog != null && (
-                  <span className="muted">
-                    Shots {g.away_sog}–{g.home_sog}
-                  </span>
-                )}
-                {g.plays_ingested != null && (
-                  <span className="muted">
-                    {g.plays_ingested} plays · updated {relativeTime(g.updated_at.toISOString())}
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
+        <div className="chips" role="group" aria-label={`${sport.label} games`}>
+          {games.map((g) => {
+            const key = `${g.league}:${g.game_id}`;
+            const on = filter === key;
+            return (
+              <button
+                key={g.id}
+                className={`chip chip-${g.state} ${on ? "chip-on" : ""}`}
+                aria-pressed={on}
+                onClick={() => setFilter(on ? null : key)}
+                title={g.competition ?? undefined}
+              >
+                <span className="chip-teams">
+                  {g.away.abbr} {g.state !== "scheduled" && <b>{g.away.score ?? 0}</b>} @ {g.home.abbr}{" "}
+                  {g.state !== "scheduled" && <b>{g.home.score ?? 0}</b>}
+                </span>
+                <span className="chip-status">
+                  {g.state === "scheduled" && g.start_time
+                    ? new Date(g.start_time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                    : (g.status_text ?? g.state)}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
+
+      <PlayStream
+        league={sport.id}
+        filter={filter}
+        empty={
+          live
+            ? "Waiting for the next play…"
+            : next?.start_time
+              ? `Next: ${next.away.abbr} @ ${next.home.abbr}, ${new Date(next.start_time).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
+              : "Plays appear here as soon as a game is live."
+        }
+      />
     </section>
   );
 }
 
-function GameStatus({ g }: { g: NHLGame }) {
-  if (isLive(g)) {
-    const period = g.period_type === "OT" ? "OT" : g.period_type === "SO" ? "SO" : `P${g.period ?? "?"}`;
-    return (
-      <span className="badge kind-received">
-        <span className="spinner" aria-hidden /> {g.intermission ? `${period} intermission` : `${period} · ${g.clock ?? ""}`}
-      </span>
-    );
-  }
-  if (g.state === "FINAL" || g.state === "OFF") return <span className="badge kind-acked">Final</span>;
-  const t = g.start_time ? new Date(g.start_time) : null;
-  return <span className="badge">{t ? t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : g.state}</span>;
+// The newest plays of one league, live from Firestore.
+function PlayStream({ league, filter, empty }: { league: string; filter: string | null; empty: string }) {
+  const [plays, setPlays] = useState<PlayDoc[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(
+    () =>
+      subscribePlays(
+        league,
+        60,
+        (p) => {
+          setPlays(p);
+          setError(null);
+        },
+        (err) => setError(friendly(err)),
+      ),
+    [league],
+  );
+
+  const shown = (plays ?? []).filter((p) => !filter || p.game_id === filter).slice(0, 30);
+
+  if (error) return <p className="alert small">{error}</p>;
+  if (plays === null) return <p className="muted small">Connecting…</p>;
+  if (shown.length === 0) return <p className="muted small stream-empty">{empty}</p>;
+  return (
+    <ol className="stream" aria-live="polite">
+      {shown.map((p) => (
+        <li key={p.id} className={`stream-item ${p.scoring ? "stream-scoring" : ""}`}>
+          <span className="stream-meta muted small">
+            {[p.period, p.clock].filter(Boolean).join(" · ")}
+            {!filter && p.matchup && <span className="stream-game">{p.matchup}</span>}
+          </span>
+          <span className="stream-text">{p.text || p.type}</span>
+          <span className="muted small stream-time" title={p.at.toISOString()}>
+            {relativeTime(p.at.toISOString())}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
-function ReplayPanel({ replays }: { replays: Replay[] }) {
+function ReplayPanel({ replays, expanded, onExpand }: { replays: Replay[]; expanded: boolean; onExpand: () => void }) {
   const [catalog, setCatalog] = useState<ReplayMatch[]>([]);
   const [speeds, setSpeeds] = useState<number[]>([10]);
   const [matchId, setMatchId] = useState<number | null>(null);
@@ -183,10 +261,15 @@ function ReplayPanel({ replays }: { replays: Replay[] }) {
   const selected = catalog.find((m) => m.match_id === matchId);
 
   return (
-    <section className="card">
+    <section className={`card pane ${expanded ? "pane-wide" : ""}`}>
       <div className="card-head">
-        <h2>Soccer match replays</h2>
-        {running > 0 && <span className="muted small">{running} running</span>}
+        <h2>⏯ Soccer replays</h2>
+        <div className="card-head-right">
+          {running > 0 && <span className="muted small">{running} running</span>}
+          <button className="link" onClick={onExpand}>
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
       </div>
       <p className="muted small">
         Streams every on-ball event of a historical match (passes, carries, shots with expected goals, fouls)
@@ -275,9 +358,10 @@ function ReplayPanel({ replays }: { replays: Replay[] }) {
           })}
         </ul>
       )}
+      <PlayStream league="statsbomb" filter={null} empty="Start a replay to see its highlights here." />
       <p className="muted small attribution">
         Soccer data: <a href="https://github.com/statsbomb/open-data" target="_blank" rel="noreferrer">StatsBomb open data</a>
-        . NHL data: NHL public API.
+        . Live data: NHL API, MLB Stats API, ESPN.
       </p>
     </section>
   );

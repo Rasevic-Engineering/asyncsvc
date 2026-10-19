@@ -1,7 +1,8 @@
 // Command ingester feeds live sports data into the events pipeline:
-// NHL play-by-play for live games, and StatsBomb soccer replays started by
-// admins (ingest-commands topic). It runs continuously (a Cloud Run worker
-// pool, or a Deployment on GKE) and serves /health and /version.
+// play-by-play for live NHL, MLB, NBA, NFL and soccer games (INGEST_LEAGUES,
+// default all), and StatsBomb soccer replays started by admins
+// (ingest-commands topic). It runs continuously (a Cloud Run worker pool, or
+// a Deployment on GKE) and serves /health and /version.
 //
 // It doesn't need the database: progress lives in Firestore.
 package main
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,12 +67,17 @@ func run() error {
 
 	rec := &activity.Recorder{Pub: pub, Topic: env("TOPIC_ACTIVITY", "activity"), Service: "ingester"}
 	in := ingest.New(pub, env("TOPIC_EVENTS", "events"), rec, &ingest.FirestoreStatus{Client: fs})
-	if base := os.Getenv("NHL_API_URL"); base != "" {
-		in.NHL.BaseURL = base
+	leagues, err := ingest.Leagues(env("INGEST_LEAGUES", "nhl,mlb,nba,nfl,soccer"))
+	if err != nil {
+		return err
 	}
-	nhl := os.Getenv("NHL_ENABLED") != "false"
-	in.Start(ctx, nhl)
-	slog.Info("ingester running", "nhl", nhl)
+	in.Tracker.Leagues = leagues
+	in.Start(ctx)
+	names := make([]string, len(leagues))
+	for i, l := range leagues {
+		names[i] = l.Name()
+	}
+	slog.Info("ingester running", "leagues", strings.Join(names, ","))
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

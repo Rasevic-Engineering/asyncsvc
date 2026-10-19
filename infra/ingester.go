@@ -1,8 +1,6 @@
 package main
 
 import (
-	"strconv"
-
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/firestore"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/projects"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/pubsub"
@@ -91,6 +89,18 @@ func (s *shared) setupIngester(ctx *pulumi.Context) error {
 	return err
 }
 
+// uiEventsFilter selects the events the ingester tagged for the admin Live
+// data page (every live play; soccer replay highlights). The rest of the
+// events topic only goes to BigQuery.
+const uiEventsFilter = `attributes.ui = "true"`
+
+func optFilter(f string) pulumi.StringPtrInput {
+	if f == "" {
+		return nil
+	}
+	return pulumi.String(f)
+}
+
 // ingesterEnv is the ingester's configuration, shared by both platforms.
 func (s *shared) ingesterEnv() []envVar {
 	return []envVar{
@@ -98,7 +108,7 @@ func (s *shared) ingesterEnv() []envVar {
 		{"TOPIC_EVENTS", s.eventsTopic.Name},
 		{"TOPIC_ACTIVITY", s.activityTopic.Name},
 		{"SUB_INGEST_COMMANDS", pulumi.String("ingest-commands-pull")},
-		{"NHL_ENABLED", pulumi.String(strconv.FormatBool(s.ingesterNHL))},
+		{"INGEST_LEAGUES", pulumi.String(s.ingesterLeagues)},
 		{"IMAGE", s.image},
 	}
 }

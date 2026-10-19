@@ -35,20 +35,30 @@ type sink struct {
 	activity *activity.Recorder
 }
 
-func (s *sink) publish(ctx context.Context, label string, events []messages.Event) error {
+// AttrUI marks events worth showing in the admin Live data page's event
+// streams. The events-to-firestore subscription filters on it, so only
+// those reach the worker that writes Firestore; BigQuery gets everything.
+const AttrUI = "ui"
+
+// publish sends events to the events topic. ui[i] tags events[i] for the
+// live UI (nil means none are).
+func (s *sink) publish(ctx context.Context, label string, events []messages.Event, ui []bool) error {
 	if len(events) == 0 {
 		return nil
 	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(16)
 	types := map[string]int{}
-	for _, ev := range events {
+	for i, ev := range events {
 		types[ev.EventType]++
 		data, err := json.Marshal(ev)
 		if err != nil {
 			return err
 		}
 		attrs := map[string]string{"event_type": ev.EventType, "source": ev.Source}
+		if i < len(ui) && ui[i] {
+			attrs[AttrUI] = "true"
+		}
 		g.Go(func() error {
 			_, err := s.pub.Publish(gctx, s.topic, data, attrs)
 			return err

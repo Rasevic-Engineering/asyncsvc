@@ -98,8 +98,8 @@ services:
       devsetup: { condition: service_completed_successfully }
 
   ingester:
-    # Live sports data: NHL play-by-play (real NHL API) and StatsBomb replays
-    # started from the admin Live data page. Events go to the emulator's
+    # Live sports data: NHL, MLB, NBA, NFL and soccer play-by-play (real
+    # public APIs) and StatsBomb replays started from the admin Live data page. Events go to the emulator's
     # events topic (there's no BigQuery locally; see events-debug).
     build: { context: .., dockerfile: Dockerfile }
     entrypoint: ["/bin/ingester"]
@@ -109,7 +109,7 @@ services:
       FIREBASE_PROJECT_ID: demo-asyncsvc
       FIRESTORE_EMULATOR_HOST: firebase:8088
       PORT: "8082"
-      # NHL_ENABLED: "false"   # turn off live NHL polling locally
+      INGEST_LEAGUES: nhl,mlb,nba,nfl,soccer   # "none" = soccer replays only
     ports: ["8082:8082"]
     depends_on:
       firebase: { condition: service_healthy }

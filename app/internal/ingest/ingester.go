@@ -16,9 +16,9 @@ import (
 // MaxReplays is how many replays may run at once.
 const MaxReplays = 3
 
-// Ingester runs the NHL poller and handles replay commands.
+// Ingester runs the live league tracker and handles replay commands.
 type Ingester struct {
-	NHL       *NHL
+	Tracker   *Tracker
 	StatsBomb *StatsBomb
 	Status    StatusStore
 
@@ -28,20 +28,21 @@ type Ingester struct {
 	ctx     context.Context
 }
 
-// New wires the sources to the events topic and the status store.
+// New wires the sources to the events topic and the status store. Set
+// Tracker.Leagues to choose live leagues.
 func New(pub Publisher, eventsTopic string, rec *activity.Recorder, status StatusStore) *Ingester {
 	sk := &sink{pub: pub, topic: eventsTopic, activity: rec}
 	return &Ingester{
-		NHL:       &NHL{sink: sk, status: status},
+		Tracker:   &Tracker{sink: sk, status: status},
 		StatsBomb: &StatsBomb{sink: sk, status: status},
 		Status:    status,
 		replays:   map[string]context.CancelCauseFunc{},
 	}
 }
 
-// Start resumes replays interrupted by a restart, and begins NHL polling
-// unless nhl is false. It returns immediately; Wait blocks until ctx ends.
-func (in *Ingester) Start(ctx context.Context, nhl bool) {
+// Start resumes replays interrupted by a restart, and begins polling the
+// live leagues (if any). It returns immediately; Wait blocks until ctx ends.
+func (in *Ingester) Start(ctx context.Context) {
 	in.ctx = ctx
 	running, err := in.Status.RunningReplays(ctx)
 	if err != nil {
@@ -58,11 +59,11 @@ func (in *Ingester) Start(ctx context.Context, nhl bool) {
 		slog.InfoContext(ctx, "resuming replay", "replay_id", cmd.ReplayID)
 		in.startReplay(cmd, int(toInt64(doc["emitted"], 0)))
 	}
-	if nhl {
+	if len(in.Tracker.Leagues) > 0 {
 		in.wg.Add(1)
 		go func() {
 			defer in.wg.Done()
-			in.NHL.Run(ctx)
+			in.Tracker.Run(ctx)
 		}()
 	}
 }

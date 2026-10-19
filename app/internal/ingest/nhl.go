@@ -4,32 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/example/asyncsvc/internal/messages"
 )
 
-// NHL polls the public NHL web API (api-web.nhle.com): the day's schedule
-// every ScheduleEvery, and each live game's play-by-play every PlaysEvery.
-// Only plays not seen before (by sortOrder, kept in the status store so it
-// survives restarts) are published.
+// NHL reads the public NHL web API (api-web.nhle.com): the day's scores and
+// each game's play-by-play. A play's sortOrder is its sequence.
 type NHL struct {
-	BaseURL       string // default https://api-web.nhle.com
-	HTTP          *http.Client
-	ScheduleEvery time.Duration // default 60s
-	PlaysEvery    time.Duration // default 10s
+	BaseURL string // default https://api-web.nhle.com
+	HTTP    *http.Client
+	Every   time.Duration // default 10s
+}
 
-	sink   *sink
-	status StatusStore
-
-	mu       sync.Mutex
-	tracking map[int64]context.CancelFunc
+func (n *NHL) Name() string  { return "nhl" }
+func (n *NHL) Label() string { return "NHL" }
+func (n *NHL) PollEvery() time.Duration {
+	if n.Every > 0 {
+		return n.Every
+	}
+	return 10 * time.Second
 }
 
 type nhlTeam struct {
@@ -37,6 +32,9 @@ type nhlTeam struct {
 	Abbrev string `json:"abbrev"`
 	Score  int    `json:"score"`
 	SOG    int    `json:"sog"`
+	Name   struct {
+		Default string `json:"default"`
+	} `json:"commonName"`
 }
 
 type nhlGame struct {
@@ -82,203 +80,110 @@ type nhlPlayByPlay struct {
 	} `json:"rosterSpots"`
 }
 
-func isLive(state string) bool { return state == "LIVE" || state == "CRIT" }
-func isOver(state string) bool { return state == "FINAL" || state == "OFF" }
-
-func (n *NHL) get(ctx context.Context, path string, v any) error {
+func (n *NHL) url(path string) string {
 	base := n.BaseURL
 	if base == "" {
 		base = "https://api-web.nhle.com"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "asyncsvc-ingester (personal project)")
-	hc := n.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second} // follows /now -> /<date> redirects
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", path, resp.Status)
-	}
-	return json.NewDecoder(resp.Body).Decode(v)
+	return base + path
 }
 
-// Run polls until ctx is cancelled.
-func (n *NHL) Run(ctx context.Context) {
-	every := n.ScheduleEvery
-	if every == 0 {
-		every = time.Minute
+func nhlState(s string) string {
+	switch s {
+	case "LIVE", "CRIT":
+		return Live
+	case "FINAL", "OFF":
+		return Final
 	}
-	n.tracking = map[int64]context.CancelFunc{}
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	return Scheduled
+}
 
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		if err := n.checkSchedule(ctx, &wg); err != nil && ctx.Err() == nil {
-			slog.WarnContext(ctx, "nhl schedule", "err", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
+func nhlPeriod(num int, typ string) string {
+	switch typ {
+	case "OT":
+		return "OT"
+	case "SO":
+		return "SO"
+	}
+	return fmt.Sprintf("P%d", num)
+}
+
+func (n *NHL) toGame(g nhlGame) Game {
+	return Game{
+		League: "nhl", ID: strconv.FormatInt(g.ID, 10), State: nhlState(g.GameState), StartTime: g.StartTimeUTC,
+		Home: Team{Abbr: g.HomeTeam.Abbrev, Name: g.HomeTeam.Name.Default, Score: g.HomeTeam.Score},
+		Away: Team{Abbr: g.AwayTeam.Abbrev, Name: g.AwayTeam.Name.Default, Score: g.AwayTeam.Score},
 	}
 }
 
-func (n *NHL) checkSchedule(ctx context.Context, wg *sync.WaitGroup) error {
+func (n *NHL) Schedule(ctx context.Context) ([]Game, error) {
 	var score struct {
 		Games []nhlGame `json:"games"`
 	}
-	if err := n.get(ctx, "/v1/score/now", &score); err != nil {
-		return err
+	if err := getJSON(ctx, n.HTTP, n.url("/v1/score/now"), &score); err != nil {
+		return nil, err
 	}
-	for _, g := range score.Games {
-		id := g.ID
-		n.mu.Lock()
-		_, tracked := n.tracking[id]
-		n.mu.Unlock()
-
-		switch {
-		case isLive(g.GameState) && !tracked:
-			gctx, cancel := context.WithCancel(ctx)
-			n.mu.Lock()
-			n.tracking[id] = cancel
-			n.mu.Unlock()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() {
-					n.mu.Lock()
-					delete(n.tracking, id)
-					n.mu.Unlock()
-				}()
-				n.trackGame(gctx, id)
-			}()
-		case !isLive(g.GameState) && !tracked:
-			// Scheduled or finished games: keep their card current.
-			if err := n.status.Merge(ctx, nhlDocID(id), map[string]any{
-				"kind": "nhl", "game_id": id, "state": g.GameState, "start_time": g.StartTimeUTC,
-				"away": g.AwayTeam.Abbrev, "home": g.HomeTeam.Abbrev,
-				"away_score": g.AwayTeam.Score, "home_score": g.HomeTeam.Score,
-			}); err != nil {
-				return err
-			}
+	out := make([]Game, len(score.Games))
+	for i, g := range score.Games {
+		out[i] = n.toGame(g)
+		if out[i].State == Final {
+			out[i].StatusText = "Final"
 		}
 	}
-	return nil
+	return out, nil
 }
 
-func nhlDocID(id int64) string { return fmt.Sprintf("nhl-%d", id) }
-
-// trackGame polls one game's play-by-play until it's over.
-func (n *NHL) trackGame(ctx context.Context, id int64) {
-	every := n.PlaysEvery
-	if every == 0 {
-		every = 10 * time.Second
-	}
-	log := slog.With("nhl_game", id)
-	log.InfoContext(ctx, "tracking NHL game")
-
-	var lastSort, ingested int64 = -1, 0
-	if doc, ok, err := n.status.Get(ctx, nhlDocID(id)); err == nil && ok {
-		lastSort = toInt64(doc["last_sort_order"], -1)
-		ingested = toInt64(doc["plays_ingested"], 0)
-	}
-
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		over, err := n.pollPlays(ctx, id, &lastSort, &ingested)
-		if err != nil && ctx.Err() == nil {
-			log.WarnContext(ctx, "nhl play-by-play", "err", err)
-		}
-		if over {
-			log.InfoContext(ctx, "NHL game over", "plays", ingested)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
-}
-
-func (n *NHL) pollPlays(ctx context.Context, id int64, lastSort, ingested *int64) (over bool, err error) {
+func (n *NHL) Plays(ctx context.Context, g Game) (Game, []Play, error) {
 	var pbp nhlPlayByPlay
-	if err := n.get(ctx, fmt.Sprintf("/v1/gamecenter/%d/play-by-play", id), &pbp); err != nil {
-		return false, err
+	if err := getJSON(ctx, n.HTTP, n.url("/v1/gamecenter/"+g.ID+"/play-by-play"), &pbp); err != nil {
+		return g, nil, err
 	}
+	cur := n.toGame(pbp.nhlGame)
+	period := nhlPeriod(pbp.PeriodDescriptor.Number, pbp.PeriodDescriptor.PeriodType)
+	switch {
+	case cur.State == Final:
+		cur.StatusText = "Final"
+	case pbp.Clock.InIntermission:
+		cur.StatusText = period + " intermission"
+	case cur.State == Live:
+		cur.StatusText = period + " · " + pbp.Clock.TimeRemaining
+	}
+	cur.Extra = map[string]any{"away_sog": pbp.AwayTeam.SOG, "home_sog": pbp.HomeTeam.SOG}
+
 	names := map[int64]string{}
 	for _, r := range pbp.RosterSpots {
 		names[r.PlayerID] = strings.TrimSpace(r.FirstName.Default + " " + r.LastName.Default)
 	}
 	teams := map[int64]string{pbp.HomeTeam.ID: pbp.HomeTeam.Abbrev, pbp.AwayTeam.ID: pbp.AwayTeam.Abbrev}
 
-	sort.Slice(pbp.Plays, func(i, j int) bool { return pbp.Plays[i].SortOrder < pbp.Plays[j].SortOrder })
-	now := time.Now()
-	gameID := fmt.Sprintf("nhl:%d", id)
-	var events []messages.Event
-	newLast := *lastSort
+	plays := make([]Play, 0, len(pbp.Plays))
 	for _, p := range pbp.Plays {
-		if p.SortOrder <= *lastSort {
-			continue
-		}
-		newLast = max(newLast, p.SortOrder)
 		team := teams[toInt64(p.Details["eventOwnerTeamId"], 0)]
-		events = append(events, messages.Event{
-			EventID:    eventID("nhl", strconv.FormatInt(id, 10), strconv.FormatInt(p.EventID, 10)),
-			EventType:  "nhl." + p.TypeDescKey,
-			UserID:     nhlActor(p.Details, names, team),
-			OccurredAt: now.UnixMicro(),
-			ReceivedAt: now.UnixMicro(),
-			Source:     "nhl",
-			GameID:     gameID,
-			Team:       team,
-			Properties: mustJSON(map[string]any{
-				"game":           fmt.Sprintf("%s @ %s", pbp.AwayTeam.Abbrev, pbp.HomeTeam.Abbrev),
-				"period":         p.PeriodDescriptor.Number,
-				"period_type":    p.PeriodDescriptor.PeriodType,
+		actor := nhlActor(p.Details, names)
+		players := nhlPlayers(p.Details, names)
+		plays = append(plays, Play{
+			Seq:     p.SortOrder,
+			Type:    p.TypeDescKey,
+			Text:    nhlText(p.TypeDescKey, actor, team, p.Details),
+			Team:    team,
+			Actor:   actor,
+			Period:  nhlPeriod(p.PeriodDescriptor.Number, p.PeriodDescriptor.PeriodType),
+			Clock:   p.TimeRemaining,
+			Scoring: p.TypeDescKey == "goal",
+			Props: map[string]any{
 				"time_in_period": p.TimeInPeriod,
 				"time_remaining": p.TimeRemaining,
 				"situation_code": p.SituationCode,
 				"details":        p.Details,
-				"players":        nhlPlayers(p.Details, names),
-			}),
+				"players":        players,
+			},
 		})
 	}
-
-	label := fmt.Sprintf("NHL %s @ %s", pbp.AwayTeam.Abbrev, pbp.HomeTeam.Abbrev)
-	if err := n.sink.publish(ctx, label, events); err != nil {
-		return false, err // lastSort not advanced: retried next poll
-	}
-	*lastSort = newLast
-	*ingested += int64(len(events))
-
-	err = n.status.Merge(ctx, nhlDocID(id), map[string]any{
-		"kind": "nhl", "game_id": id, "state": pbp.GameState, "start_time": pbp.StartTimeUTC,
-		"away": pbp.AwayTeam.Abbrev, "home": pbp.HomeTeam.Abbrev,
-		"away_score": pbp.AwayTeam.Score, "home_score": pbp.HomeTeam.Score,
-		"away_sog": pbp.AwayTeam.SOG, "home_sog": pbp.HomeTeam.SOG,
-		"period": pbp.PeriodDescriptor.Number, "period_type": pbp.PeriodDescriptor.PeriodType,
-		"clock": pbp.Clock.TimeRemaining, "intermission": pbp.Clock.InIntermission,
-		"plays_ingested": *ingested, "last_sort_order": *lastSort,
-	})
-	return isOver(pbp.GameState), err
+	return cur, plays, nil
 }
 
-// nhlActor picks the player a play is "about" (scorer, shooter, hitter, ...),
-// falling back to the team.
-func nhlActor(details map[string]any, names map[int64]string, team string) string {
+// nhlActor picks the player a play is "about" (scorer, shooter, hitter, ...).
+func nhlActor(details map[string]any, names map[int64]string) string {
 	for _, k := range []string{"scoringPlayerId", "shootingPlayerId", "hittingPlayerId", "winningPlayerId",
 		"committedByPlayerId", "blockingPlayerId", "playerId"} {
 		if id := toInt64(details[k], 0); id != 0 {
@@ -288,10 +193,7 @@ func nhlActor(details map[string]any, names map[int64]string, team string) strin
 			return fmt.Sprintf("player:%d", id)
 		}
 	}
-	if team != "" {
-		return "team:" + team
-	}
-	return "game"
+	return ""
 }
 
 // nhlPlayers resolves every *PlayerId in a play's details to a name.
@@ -307,6 +209,32 @@ func nhlPlayers(details map[string]any, names map[int64]string) map[string]strin
 	return out
 }
 
+func nhlText(typ, actor, team string, d map[string]any) string {
+	label := strings.ReplaceAll(typ, "-", " ")
+	label = strings.ToUpper(label[:1]) + label[1:]
+	parts := []string{label}
+	if actor != "" {
+		parts = append(parts, actor)
+	}
+	if team != "" {
+		parts[len(parts)-1] += " (" + team + ")"
+	}
+	if st, ok := d["shotType"].(string); ok && st != "" {
+		parts = append(parts, st)
+	}
+	if typ == "goal" {
+		if a, h := toInt64(d["awayScore"], -1), toInt64(d["homeScore"], -1); a >= 0 && h >= 0 {
+			parts = append(parts, fmt.Sprintf("%d–%d", a, h))
+		}
+	}
+	if typ == "penalty" {
+		if k, ok := d["descKey"].(string); ok {
+			parts = append(parts, strings.ReplaceAll(k, "-", " "))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 func toInt64(v any, def int64) int64 {
 	switch x := v.(type) {
 	case float64:
@@ -317,6 +245,11 @@ func toInt64(v any, def int64) int64 {
 		return int64(x)
 	case json.Number:
 		n, err := x.Int64()
+		if err == nil {
+			return n
+		}
+	case string:
+		n, err := strconv.ParseInt(x, 10, 64)
 		if err == nil {
 			return n
 		}

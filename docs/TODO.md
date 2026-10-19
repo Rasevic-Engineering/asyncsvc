@@ -142,9 +142,9 @@ Known gaps and planned improvements, roughly in priority order within each secti
 
 ## Live sports data
 
-- [ ] **Scale the ingester to zero when idle:** run it only around NHL game times (Cloud Scheduler toggling the worker pool's instance count), or as a scheduled Cloud Run Job, instead of 24/7 (~$50/month).
+- [ ] **Scale the ingester to zero when idle:** run it only around game times (Cloud Scheduler toggling the worker pool's instance count), or as a scheduled Cloud Run Job, instead of 24/7 (~$50/month).
 - [ ] **More sources** on the same pattern: MLB Stats API (pitch-by-pitch), NBA live data, Wikimedia EventStreams.
-- [ ] **NHL play corrections:** the NHL sometimes edits plays after the fact (e.g. reassigning a goal). Only new plays are ingested today; re-check recent plays and publish corrections.
+- [ ] **Play corrections:** leagues sometimes edit plays after the fact (e.g. reassigning a goal). Only new plays are ingested today; re-check recent plays and publish corrections.
 - [ ] **Replay any StatsBomb match**, not just the curated catalog, by browsing `competitions.json` from the UI.
 - [ ] **Visualizations:** shot maps from the rink and pitch coordinates already in `properties`.
 

@@ -25,6 +25,7 @@ import (
 	"github.com/example/asyncsvc/internal/httpx"
 	"github.com/example/asyncsvc/internal/mail"
 	"github.com/example/asyncsvc/internal/outbox"
+	"github.com/example/asyncsvc/internal/playfeed"
 	"github.com/example/asyncsvc/internal/pubsubx"
 	"github.com/example/asyncsvc/internal/reports"
 	"github.com/example/asyncsvc/internal/version"
@@ -106,6 +107,7 @@ func run() error {
 		Relay:            &outbox.Relay{Pool: pool, Pub: pub, Activity: rec},
 		Activity:         rec,
 		ActivitySink:     &activity.FirestoreSink{Client: fs},
+		PlaySink:         &playfeed.Firestore{Client: fs},
 		EmailMaxAttempts: cfg.EmailMaxAttempts,
 		TopicReports:     cfg.TopicReports,
 		TopicEmails:      cfg.TopicEmails,
@@ -126,6 +128,7 @@ func run() error {
 			cfg.SubReports:  wk.ReportHandler(),
 			cfg.SubEmails:   wk.EmailHandler(),
 			cfg.SubActivity: wk.HandleActivity, // uninstrumented on purpose
+			cfg.SubPlays:    wk.HandlePlay,     // uninstrumented on purpose
 		} {
 			g.Go(func() error {
 				slog.Info("consuming", "subscription", sub)

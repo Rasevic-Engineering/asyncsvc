@@ -1,13 +1,13 @@
 # Turning the live sports ingester on and off
 
-The ingester streams NHL play-by-play and StatsBomb soccer replays into the events pipeline ([README › Live sports data](../README.md#live-sports-data)). It runs as one always-on instance: a Cloud Run worker pool `asyncsvc-ingester`, or the `ingester` Deployment on GKE. That costs roughly **$50/month**, so turn it off when you're not using it.
+The ingester streams live play-by-play (NHL, MLB, NBA, NFL, soccer) and StatsBomb soccer replays into the events pipeline ([README › Live sports data](../README.md#live-sports-data)). It runs as one always-on instance: a Cloud Run worker pool `asyncsvc-ingester`, or the `ingester` Deployment on GKE. That costs roughly **$50/month**, so turn it off when you're not using it.
 
 There are two switches:
 
 | Setting | Default | Effect |
 |---|---|---|
-| `ingesterEnabled` | `true` | `false` scales the ingester to **zero instances**: no NHL polling, no replays, no cost |
-| `ingesterNhl` | `true` | `false` keeps the ingester running for **soccer replays only** and stops polling the NHL API. The instance cost stays the same |
+| `ingesterEnabled` | `true` | `false` scales the ingester to **zero instances**: no live polling, no replays, no cost |
+| `ingesterLeagues` | `nhl,mlb,nba,nfl,soccer` | Which leagues to poll live. `none` keeps the ingester running for **soccer replays only**. The instance cost stays the same |
 
 ## Turn it off or on (recommended)
 
@@ -44,14 +44,15 @@ If you deploy from your machine, still commit and push `Pulumi.dev.yaml` afterwa
 
 `pulumi preview` should show a single change, `~ gcp:cloudrunv2:WorkerPool ingester update [diff: ~scaling]` (or `~ kubernetes:apps/v1:Deployment ingester` on GKE).
 
-### NHL polling only
+### Choosing leagues
 
-To keep replays available while not polling the NHL API:
+To poll only some leagues, or none while keeping replays available:
 
 ```bash
 cd ~/rasevicengineering/asyncsvc/infra
-pulumi config set ingesterNhl false     # replays only
-# pulumi config set ingesterNhl true    # poll NHL again
+pulumi config set ingesterLeagues nhl,mlb                 # just these
+pulumi config set ingesterLeagues none                    # replays only
+# pulumi config set ingesterLeagues nhl,mlb,nba,nfl,soccer  # all (default)
 ```
 
 Deploy it the same way as above.
@@ -70,13 +71,13 @@ Turn it back on:
 gcloud run worker-pools update asyncsvc-ingester --region us-central1 --project asyncsvc-dev --instances 1
 ```
 
-NHL polling only, without a deploy:
+Change the leagues without a deploy:
 
 ```bash
-gcloud run worker-pools update asyncsvc-ingester --region us-central1 --project asyncsvc-dev --update-env-vars NHL_ENABLED=false
+gcloud run worker-pools update asyncsvc-ingester --region us-central1 --project asyncsvc-dev --update-env-vars INGEST_LEAGUES=none
 ```
 
-**This doesn't stick.** Pulumi manages the worker pool, so the **next deploy resets it** to `ingesterEnabled` / `ingesterNhl` from the stack config. Use the Pulumi setting for anything longer than a quick pause.
+**This doesn't stick.** Pulumi manages the worker pool, so the **next deploy resets it** to `ingesterEnabled` / `ingesterLeagues` from the stack config. Use the Pulumi setting for anything longer than a quick pause.
 
 On GKE, the equivalent is:
 
@@ -111,12 +112,12 @@ In the app, the **Live data** page shows "No games live" with no card updates, a
 | **Replays already running** | Paused, not lost. On shutdown each replay saves its position and stays `running`; when the ingester comes back it **resumes from where it stopped** |
 | **New replay requests** | Accepted by the API and **queued** in the `ingest-commands-pull` subscription (kept up to 7 days). They start when the ingester is back on |
 | **Stop requests** | Also queued; applied when it's back on |
-| **NHL games** | Not polled. When the ingester comes back **during** a game, it catches up on that game's plays since the last one ingested. Those plays get the time they were ingested, not when they happened. Games that **start and finish** while it's off are skipped |
+| **Live games** | Not polled. When the ingester comes back **during** a game, it catches up on that game's plays since the last one ingested. Those plays get the time they were ingested, not when they happened. Games that **start and finish** while it's off are skipped |
 | **Everything else** | Unaffected: API, worker, reports, emails, Activity feed, and `POST /v1/events` |
 
 ## Local development
 
-The docker-compose stack runs the ingester too, polling the real NHL API.
+The docker-compose stack runs the ingester too, polling the real APIs for every league.
 
 ```bash
 cd ~/rasevicengineering/asyncsvc/app
@@ -124,7 +125,7 @@ docker compose stop ingester       # off
 docker compose start ingester      # on
 ```
 
-For replays only, uncomment `NHL_ENABLED: "false"` under `ingester` in `app/docker-compose.yml`, then:
+To change the leagues, edit `INGEST_LEAGUES` under `ingester` in `app/docker-compose.yml` (`none` = replays only), then:
 
 ```bash
 docker compose up -d ingester

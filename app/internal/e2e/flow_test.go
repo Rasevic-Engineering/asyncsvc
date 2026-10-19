@@ -36,6 +36,7 @@ import (
 	"github.com/example/asyncsvc/internal/mail"
 	"github.com/example/asyncsvc/internal/messages"
 	"github.com/example/asyncsvc/internal/outbox"
+	"github.com/example/asyncsvc/internal/playfeed"
 	"github.com/example/asyncsvc/internal/reports"
 	"github.com/example/asyncsvc/internal/worker"
 )
@@ -133,6 +134,7 @@ func (m *memorySink) Write(_ context.Context, a messages.Activity) error {
 
 type env struct {
 	sink    *memorySink
+	plays   *playfeed.Memory
 	t       *testing.T
 	pool    *pgxpool.Pool
 	ps      *fakePubSub
@@ -225,6 +227,7 @@ func setup(t *testing.T) *env {
 		return &activity.Recorder{Pub: e.ps, Topic: "activity", Service: service}
 	}
 	e.sink = &memorySink{}
+	e.plays = &playfeed.Memory{}
 	e.relay = &outbox.Relay{Pool: pool, Pub: e.ps, Activity: rec("api")}
 
 	// Mimics a Next.js static export.
@@ -247,7 +250,7 @@ func setup(t *testing.T) *env {
 		Relay: e.relay, TopicEmails: "email-requests", PublicAPIURL: "https://api.example.com",
 		MaxAttempts: 3, GenerateTimeout: 10 * time.Second, StaleAfter: time.Minute,
 		TopicReports: "report-requests", EmailMaxAttempts: 5,
-		Activity: rec("worker"), ActivitySink: e.sink,
+		Activity: rec("worker"), ActivitySink: e.sink, PlaySink: e.plays,
 	}).Routes())
 	t.Cleanup(e.worker.Close)
 	return e
@@ -772,5 +775,38 @@ func TestReplayCommands(t *testing.T) {
 	}
 	if n := len(e.ps.take("ingest-commands")); n != 0 {
 		t.Fatalf("rejected requests published %d commands", n)
+	}
+}
+
+func TestPlaysConsumer(t *testing.T) {
+	e := setup(t)
+	play := func(id string, ui bool) published {
+		data, _ := json.Marshal(messages.Event{
+			EventID: id, EventType: "mlb.home-run", UserID: "Aaron Judge", Source: "mlb", GameID: "mlb:1", Team: "NYY",
+			OccurredAt: time.Now().UnixMicro(),
+			Properties: `{"game":"BOS @ NYY","period":"Bot 7th","text":"Aaron Judge homers (50)","scoring":true}`,
+		})
+		attrs := map[string]string{"source": "mlb"}
+		if ui {
+			attrs["ui"] = "true"
+		}
+		return published{topic: "events", data: data, attrs: attrs, id: id}
+	}
+
+	if got := e.push("/pubsub/plays", play("p1", true), 1); got != http.StatusNoContent {
+		t.Fatalf("push: %d", got)
+	}
+	e.push("/pubsub/plays", play("p1", true), 2) // redelivery: same document
+	e.push("/pubsub/plays", play("p2", false), 1)
+	if n := e.plays.Len(); n != 1 {
+		t.Fatalf("want 1 play stored (untagged ignored, redelivery idempotent), got %d", n)
+	}
+	d := e.plays.Docs["p1"]
+	if d["league"] != "mlb" || d["type"] != "home-run" || d["text"] != "Aaron Judge homers (50)" || d["scoring"] != true || d["matchup"] != "BOS @ NYY" {
+		t.Fatalf("doc: %v", d)
+	}
+	// Consuming plays never records activity (it would double the feed).
+	if n := len(e.ps.take("activity")); n != 0 {
+		t.Fatalf("plays consumer recorded %d activity events", n)
 	}
 }

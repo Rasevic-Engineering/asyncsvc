@@ -184,10 +184,11 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 	}
 
 	// ---- Push subscriptions -----------------------------------------
-	pushSub := func(name string, topic *pubsub.Topic, path string, ackDeadline, maxAttempts int) error {
+	pushSub := func(name string, topic *pubsub.Topic, path string, ackDeadline, maxAttempts int, filter string) error {
 		sub, err := pubsub.NewSubscription(ctx, name, &pubsub.SubscriptionArgs{
 			Name:               pulumi.String(name),
 			Topic:              topic.Name,
+			Filter:             optFilter(filter),
 			AckDeadlineSeconds: pulumi.Int(ackDeadline),
 			ExpirationPolicy:   &pubsub.SubscriptionExpirationPolicyArgs{Ttl: pulumi.String("")},
 			PushConfig: &pubsub.SubscriptionPushConfigArgs{
@@ -206,14 +207,20 @@ func deployCloudRun(ctx *pulumi.Context, s *shared) error {
 		return s.allowDeadLettering(ctx, name, sub)
 	}
 	// 600s is Pub/Sub's max ack deadline: reports can take minutes.
-	if err := pushSub("reports-push", s.reportsTopic, "/pubsub/reports", 600, reportsMaxAttempts); err != nil {
+	if err := pushSub("reports-push", s.reportsTopic, "/pubsub/reports", 600, reportsMaxAttempts, ""); err != nil {
 		return err
 	}
-	if err := pushSub("emails-push", s.emailsTopic, "/pubsub/emails", 60, emailsMaxAttempts); err != nil {
+	if err := pushSub("emails-push", s.emailsTopic, "/pubsub/emails", 60, emailsMaxAttempts, ""); err != nil {
 		return err
 	}
 	// Activity events: the worker stores them in Firestore for the live feed.
-	if err := pushSub("activity-push", s.activityTopic, "/pubsub/activity", 30, emailsMaxAttempts); err != nil {
+	if err := pushSub("activity-push", s.activityTopic, "/pubsub/activity", 30, emailsMaxAttempts, ""); err != nil {
+		return err
+	}
+	// Second consumer of the events topic (BigQuery is the first): live
+	// plays for the admin Live data page, filtered by Pub/Sub to events the
+	// ingester tagged ui=true; the worker writes them to Firestore.
+	if err := pushSub("events-to-firestore", s.eventsTopic, "/pubsub/plays", 30, emailsMaxAttempts, uiEventsFilter); err != nil {
 		return err
 	}
 

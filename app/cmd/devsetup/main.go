@@ -59,12 +59,18 @@ func main() {
 				Name: sub("activity-push"), Topic: topic("activity"), AckDeadlineSeconds: 30, RetryPolicy: retry,
 				PushConfig: &pubsubpb.PushConfig{PushEndpoint: workerURL + "/pubsub/activity"},
 			},
+			{
+				Name: sub("events-to-firestore"), Topic: topic("events"), AckDeadlineSeconds: 30, RetryPolicy: retry,
+				Filter:     `attributes.ui = "true"`,
+				PushConfig: &pubsubpb.PushConfig{PushEndpoint: workerURL + "/pubsub/plays"},
+			},
 		}
 	case "pull":
 		subs = []*pubsubpb.Subscription{
 			{Name: sub("reports-pull"), Topic: topic("report-requests"), AckDeadlineSeconds: 60, RetryPolicy: retry},
 			{Name: sub("emails-pull"), Topic: topic("email-requests"), AckDeadlineSeconds: 60, RetryPolicy: retry},
 			{Name: sub("activity-pull"), Topic: topic("activity"), AckDeadlineSeconds: 30, RetryPolicy: retry},
+			{Name: sub("plays-pull"), Topic: topic("events"), AckDeadlineSeconds: 30, RetryPolicy: retry, Filter: `attributes.ui = "true"`},
 		}
 	default:
 		log.Fatalf("WORKER_MODE must be push or pull, got %q", mode)

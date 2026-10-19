@@ -14,26 +14,34 @@ A separate **ingester** (`/bin/ingester`) streams real sports data into the same
 
 | Source | What | How |
 |---|---|---|
-| **NHL** ([public API](https://api-web.nhle.com)) | Every play of every live game: shots with rink coordinates, goals, hits, faceoffs, penalties | Checks the schedule every minute and polls each live game every 10s. Only new plays are published; the position is kept in Firestore, so restarts don't duplicate |
+| **NHL** ([public API](https://api-web.nhle.com)) | Every play of every live game: shots with rink coordinates, goals, hits, faceoffs, penalties | Polled every 10s |
+| **MLB** ([Stats API](https://statsapi.mlb.com)) | Pitch by pitch: speed, pitch type, zone, count, exit velocity; plus each at-bat's result and in-game actions | Polled every 10s |
+| **NBA** (ESPN) | Every play: shots, rebounds, fouls, turnovers, substitutions | Polled every 10s |
+| **NFL** (ESPN) | Every play, with down and distance | Polled every 15s |
+| **Soccer** (ESPN) | Live commentary events (shots, goals, cards, subs) for Premier League, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Champions League and Europa League | Polled every 30s |
 | **StatsBomb** ([open data](https://github.com/statsbomb/open-data)) | Every on-ball event of a famous match (passes, carries, shots with expected goals, fouls), replayed in its original timing at 1×–60× | Admin starts a replay on the **Live data** page → `POST /v1/admin/replays` → topic `ingest-commands` → ingester. Up to 3 at once; replays **resume after a restart** |
 
+For every live league, the ingester checks the schedule every minute and polls each live game. Only new plays are published; each game's position is kept in Firestore, so restarts don't duplicate. Pick the leagues with `ingesterLeagues`.
+
 ```
-NHL API ◀─poll─┐
-               ingester ──▶ topic "events" ──▶ BigQuery analytics.events (source, game_id, team, properties)
-admin UI ─▶ API ─▶ topic "ingest-commands" ─pull─┘   └─▶ Firestore "ingest" ──▶ Live data page (real time)
+NHL/MLB/ESPN ◀─poll─┐
+                    ingester ──▶ topic "events" ─┬─▶ BigQuery analytics.events (source, game_id, team, properties)
+admin UI ─▶ API ─▶ topic "ingest-commands" ─pull─┘  │   └─ sub "events-to-firestore" (filter ui=true) ─▶ worker ─▶ Firestore "plays"
+                       └─▶ Firestore "ingest" (scoreboards, replays) ──────────────▶ Live data page (one pane per sport, real time)
 ```
 
 - **Event shape:**
-  - `event_type`: `nhl.<play>` (e.g. `nhl.shot-on-goal`) or `soccer.<event>` (e.g. `soccer.pass`);
+  - `event_type`: `<league>.<play>`, e.g. `nhl.shot-on-goal`, `mlb.pitch`, `mlb.home-run`, `nba.three-point-jumper`, `soccer.goal`; replays use `statsbomb`'s `soccer.<event>` (e.g. `soccer.pass`);
   - `user_id`: the player;
   - `team` and `game_id`;
   - `properties`: period, clock, coordinates, shot type, outcome, expected goals, …
 
   Event IDs are deterministic, so a duplicate is easy to spot.
+- **Play streams:** live plays and replay highlights (shots, goals, fouls, subs; not every pass) carry the Pub/Sub attribute `ui=true`. A filtered push subscription delivers only those to the worker, which writes them to Firestore `plays` (kept 2 days via a TTL policy). The **Live data** page shows a pane per sport with its scoreboard and play stream.
 - **Reports:** *Sports activity* (event counts per game, team and type) and *Shots by team* (shots, on target, goals, expected goals; shootouts excluded).
-- **Runs as:** a **Cloud Run worker pool** (always on, no HTTP traffic), or a `Deployment` on GKE. One instance costs roughly **$50/month**. **To turn it off and on**, or to stop just NHL polling, see **[docs/ingester.md](docs/ingester.md)**.
-- **Locally:** `make dev` runs the ingester too, polling the real NHL API (set `NHL_ENABLED=false` to stop that). Replays work from http://localhost:8080/live.
-- The data is used under the NHL API's and StatsBomb's non-commercial terms. The Live data page credits both.
+- **Runs as:** a **Cloud Run worker pool** (always on, no HTTP traffic), or a `Deployment` on GKE. One instance costs roughly **$50/month**. **To turn it off and on**, or to choose which leagues it polls, see **[docs/ingester.md](docs/ingester.md)**.
+- **Locally:** `make dev` runs the ingester too, polling the real APIs for the leagues in `INGEST_LEAGUES` (`none` = replays only). Replays work from http://localhost:8080/live.
+- The data comes from public, unofficial endpoints (NHL, MLB, ESPN) and StatsBomb open data, for personal, non-commercial use. The Live data page credits the sources.
 
 ## Admin Activity feed
 
@@ -332,7 +340,7 @@ curl -si -H "$AUTH" $API/v1/reports -d '{"kind":"events_by_type","from":"2026-10
 | `publicApi` | `true` | Network-level access to the API/UI. The API enforces Firebase auth either way. `false` = IAM-only on Cloud Run, internal load balancer on GKE |
 | `customDomain` | empty | Cloud Run only: serve the app at this hostname through a global HTTPS load balancer with a Google-managed certificate and HTTP→HTTPS redirect (about $18/month). After deploying, create the DNS **A** record from the `customDomainDns` output; the certificate is issued once DNS resolves (15 minutes to a few hours)
 | `ingesterEnabled` | `true` | Run the live sports ingester (1 always-on instance, ~$50/month); `false` scales it to zero. See [docs/ingester.md](docs/ingester.md) |
-| `ingesterNhl` | `true` | `false` stops NHL polling and keeps soccer replays |
+| `ingesterLeagues` | `nhl,mlb,nba,nfl,soccer` | Leagues to poll live; `none` keeps only soccer replays |
 | `githubRepository` / `githubEnvironment` / `githubBranch` | empty / stack name / `main` | Which GitHub Actions runs may deploy this stack (see CI/CD) |
 | `adminEmails` | empty | Comma-separated; these verified emails get the admin role |
 | `googleOAuthClientId` / `googleOAuthClientSecret` (secret) | unset | Enables Google sign-in. Create a "Web application" OAuth client in the console first, with redirect URI `https://<project>.firebaseapp.com/__/auth/handler` |

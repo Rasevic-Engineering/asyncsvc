@@ -29,6 +29,7 @@ import (
 	"github.com/example/asyncsvc/internal/mail"
 	"github.com/example/asyncsvc/internal/messages"
 	"github.com/example/asyncsvc/internal/outbox"
+	"github.com/example/asyncsvc/internal/playfeed"
 	"github.com/example/asyncsvc/internal/pubsubx"
 	"github.com/example/asyncsvc/internal/reports"
 	"github.com/example/asyncsvc/internal/version"
@@ -54,6 +55,8 @@ type Worker struct {
 	// events delivered by the activity subscription (Firestore).
 	Activity     *activity.Recorder
 	ActivitySink activity.Sink
+	// PlaySink stores live sports plays for the admin Live data page.
+	PlaySink     playfeed.Sink
 	TopicReports string
 	// GenerateTimeout bounds one report run.
 	GenerateTimeout time.Duration
@@ -72,6 +75,8 @@ func (wk *Worker) Routes() http.Handler {
 	mux.HandleFunc("POST /pubsub/emails", wk.push(wk.EmailHandler()))
 	// Not wrapped in Handle: recording activity about activity would loop.
 	mux.HandleFunc("POST /pubsub/activity", wk.push(wk.HandleActivity))
+	// Also uninstrumented: two Activity rows per play would drown the feed.
+	mux.HandleFunc("POST /pubsub/plays", wk.push(wk.HandlePlay))
 	mux.HandleFunc("POST /tasks/relay-outbox", wk.relayOutbox)
 	return mux
 }
@@ -133,6 +138,22 @@ func (wk *Worker) Handle(topic string, maxAttempts int, h pubsubx.Handler) pubsu
 		}
 		return err
 	}
+}
+
+// HandlePlay stores a live sports play for the admin Live data page. It's
+// the consumer of the events-to-firestore subscription, which only delivers
+// events tagged ui=true; the check here is a safety net (e.g. the local
+// emulator, or a subscription created without the filter).
+func (wk *Worker) HandlePlay(ctx context.Context, d pubsubx.Delivery) error {
+	if wk.PlaySink == nil || d.Attributes["ui"] != "true" {
+		return nil
+	}
+	var ev messages.Event
+	if err := json.Unmarshal(d.Data, &ev); err != nil || ev.EventID == "" {
+		slog.WarnContext(ctx, "bad play message; dropping", "err", err)
+		return nil
+	}
+	return wk.PlaySink.Write(ctx, ev)
 }
 
 // HandleActivity stores an activity event for the admin Activity page.

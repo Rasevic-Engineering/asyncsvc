@@ -60,13 +60,14 @@ var queries = map[string]string{
 		WHERE occurred_at >= @from AND occurred_at < @to
 		GROUP BY day
 		ORDER BY day`,
-	// Live NHL and StatsBomb replay events: what happened, per game and team.
+	// Live NHL/MLB/NBA/NFL/soccer and StatsBomb replay events: what
+	// happened, per game and team.
 	"sports_activity": `
-		SELECT source, game_id, JSON_VALUE(properties, '$.game') AS nhl_game,
+		SELECT source, game_id, JSON_VALUE(properties, '$.game') AS live_game,
 		       JSON_VALUE(properties, '$.match') AS soccer_match, team, event_type, COUNT(*) AS events
 		FROM %[1]s
-		WHERE occurred_at >= @from AND occurred_at < @to AND source IN ('nhl', 'statsbomb')
-		GROUP BY source, game_id, nhl_game, soccer_match, team, event_type
+		WHERE occurred_at >= @from AND occurred_at < @to AND source IN ('nhl', 'mlb', 'nba', 'nfl', 'soccer', 'statsbomb')
+		GROUP BY source, game_id, live_game, soccer_match, team, event_type
 		ORDER BY source, game_id, team, events DESC`,
 	// Shots, shots on target and goals per team per game (expected goals for
 	// soccer, where StatsBomb provides it).
@@ -74,14 +75,18 @@ var queries = map[string]string{
 		SELECT source, game_id,
 		       COALESCE(ANY_VALUE(JSON_VALUE(properties, '$.game')), ANY_VALUE(JSON_VALUE(properties, '$.match'))) AS game,
 		       team,
-		       COUNTIF(event_type IN ('nhl.shot-on-goal', 'nhl.missed-shot', 'nhl.goal', 'soccer.shot')) AS shots,
+		       COUNTIF(event_type IN ('nhl.shot-on-goal', 'nhl.missed-shot', 'nhl.goal', 'soccer.shot')
+		               OR (source = 'soccer' AND event_type IN ('soccer.shot-on-target', 'soccer.shot-off-target',
+		                                                       'soccer.shot-blocked', 'soccer.goal', 'soccer.penalty-scored'))) AS shots,
 		       COUNTIF(event_type IN ('nhl.shot-on-goal', 'nhl.goal')
+		               OR (source = 'soccer' AND event_type IN ('soccer.shot-on-target', 'soccer.goal', 'soccer.penalty-scored'))
 		               OR (event_type = 'soccer.shot' AND JSON_VALUE(properties, '$.outcome') IN ('Goal', 'Saved', 'Saved To Post'))) AS on_target,
 		       COUNTIF(event_type = 'nhl.goal'
+		               OR (source = 'soccer' AND event_type IN ('soccer.goal', 'soccer.penalty-scored', 'soccer.own-goal'))
 		               OR (event_type = 'soccer.shot' AND JSON_VALUE(properties, '$.outcome') = 'Goal')) AS goals,
 		       ROUND(SUM(SAFE_CAST(JSON_VALUE(properties, '$.xg') AS FLOAT64)), 2) AS expected_goals
 		FROM %[1]s
-		WHERE occurred_at >= @from AND occurred_at < @to AND source IN ('nhl', 'statsbomb')
+		WHERE occurred_at >= @from AND occurred_at < @to AND source IN ('nhl', 'soccer', 'statsbomb')
 		  -- Penalty shootouts (StatsBomb period 5) aren't part of the match stats.
 		  AND NOT (source = 'statsbomb' AND SAFE_CAST(JSON_VALUE(properties, '$.period') AS INT64) = 5)
 		GROUP BY source, game_id, team

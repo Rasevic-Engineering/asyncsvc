@@ -234,12 +234,13 @@ func (s *StatsBomb) Replay(ctx context.Context, cmd messages.IngestCommand, from
 	lastStatus := time.Time{}
 
 	var batch []messages.Event
+	var ui []bool // highlights (shots, goals, cards, subs) are shown in the UI
 	emitted := from
 	flush := func(i int, e sbEvent, final bool) error {
-		if err := s.sink.publish(ctx, label, batch); err != nil {
+		if err := s.sink.publish(ctx, label, batch, ui); err != nil {
 			return err
 		}
-		batch = batch[:0]
+		batch, ui = batch[:0], ui[:0]
 		emitted = i + 1
 		if final || time.Since(lastStatus) >= statusEvery {
 			lastStatus = time.Now()
@@ -256,7 +257,9 @@ func (s *StatsBomb) Replay(ctx context.Context, cmd messages.IngestCommand, from
 	var owed time.Duration
 	for i := from; i < len(events); i++ {
 		e := events[i]
-		batch = append(batch, s.toEvent(cmd, gameID, match, e))
+		h, isHighlight := highlight(i, e)
+		batch = append(batch, s.toEvent(cmd, gameID, match, e, h, isHighlight))
+		ui = append(ui, isHighlight)
 		countGoal(score, e)
 
 		// The gap to the next event, scaled by speed.
@@ -312,8 +315,9 @@ func countGoal(score map[string]int, e sbEvent) {
 	}
 }
 
-func (s *StatsBomb) toEvent(cmd messages.IngestCommand, gameID string, m Match, e sbEvent) messages.Event {
-	now := time.Now()
+func (s *StatsBomb) toEvent(cmd messages.IngestCommand, gameID string, m Match, e sbEvent, h Play, isHighlight bool) messages.Event {
+	// Event index as microseconds keeps a batch in match order.
+	now := time.Now().Add(time.Duration(e.Index%1000) * time.Microsecond)
 	player := "team:" + e.Team.Name
 	if e.Player != nil && e.Player.Name != "" {
 		player = e.Player.Name
@@ -332,6 +336,12 @@ func (s *StatsBomb) toEvent(cmd messages.IngestCommand, gameID string, m Match, 
 	}
 	if len(e.Location) == 2 {
 		props["x"], props["y"] = e.Location[0], e.Location[1]
+	}
+	if isHighlight {
+		props["text"], props["clock"], props["highlight"] = h.Text, h.Clock, true
+		if h.Scoring {
+			props["scoring"] = true
+		}
 	}
 	if e.Shot != nil {
 		props["xg"] = e.Shot.XG
@@ -367,4 +377,40 @@ func (s *StatsBomb) toEvent(cmd messages.IngestCommand, gameID string, m Match, 
 func slug(s string) string {
 	s = strings.ToLower(strings.TrimSpace(strings.TrimRight(s, "*")))
 	return strings.Join(strings.Fields(s), "-")
+}
+
+// highlight picks the events worth showing in the UI's live stream (shots,
+// goals, cards, substitutions); passes and carries only go to BigQuery.
+func highlight(i int, e sbEvent) (Play, bool) {
+	who := e.Team.Name
+	if e.Player != nil && e.Player.Name != "" {
+		who = e.Player.Name + " (" + e.Team.Name + ")"
+	}
+	clock := fmt.Sprintf("%d'", e.Minute+1)
+	p := Play{Seq: int64(i), Team: e.Team.Name, Period: fmt.Sprintf("P%d", e.Period), Clock: clock}
+	if e.Player != nil {
+		p.Actor = e.Player.Name
+	}
+	switch e.Type.Name {
+	case "Shot":
+		if e.Shot == nil {
+			return Play{}, false
+		}
+		p.Type, p.Scoring = "shot", e.Shot != nil && e.Shot.Outcome.Name == "Goal"
+		p.Text = fmt.Sprintf("Shot by %s · %s · xG %.2f", who, e.Shot.Outcome.Name, e.Shot.XG)
+		if p.Scoring {
+			p.Text = "Goal! " + p.Text
+		}
+	case "Substitution":
+		p.Type, p.Text = "substitution", "Substitution: "+who
+	case "Foul Committed", "Bad Behaviour":
+		p.Type, p.Text = typeSlug(e.Type.Name), e.Type.Name+" · "+who
+	case "Own Goal For":
+		p.Type, p.Scoring, p.Text = "own-goal", true, "Own goal · "+e.Team.Name
+	case "Half Start", "Half End":
+		p.Type, p.Text = typeSlug(e.Type.Name), e.Type.Name
+	default:
+		return Play{}, false
+	}
+	return p, true
 }

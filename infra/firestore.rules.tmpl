@@ -18,8 +18,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Live data ingestion status (NHL games, soccer replays).
+    // Live data ingestion status (game scoreboards, soccer replays).
     match /ingest/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Live plays per sport (written by the worker from Pub/Sub).
+    match /plays/{id} {
       allow read: if isAdmin();
       allow write: if false;
     }

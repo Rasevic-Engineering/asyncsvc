@@ -123,6 +123,31 @@ func (s *shared) setupActivity(ctx *pulumi.Context) error {
 		return err
 	}
 
+	// Live plays for the Live data page (written by the worker from the
+	// events-to-firestore subscription): 2-day TTL, and an index for "this
+	// sport's latest plays".
+	if _, err := firestore.NewField(ctx, "plays-ttl", &firestore.FieldArgs{
+		Project:    pulumi.String(s.project),
+		Database:   db.Name,
+		Collection: pulumi.String("plays"),
+		Field:      pulumi.String("expire_at"),
+		TtlConfig:  &firestore.FieldTtlConfigArgs{},
+	}); err != nil {
+		return err
+	}
+	if _, err := firestore.NewIndex(ctx, "plays-by-league", &firestore.IndexArgs{
+		Project:    pulumi.String(s.project),
+		Database:   db.Name,
+		Collection: pulumi.String("plays"),
+		QueryScope: pulumi.String("COLLECTION"),
+		Fields: firestore.IndexFieldArray{
+			&firestore.IndexFieldArgs{FieldPath: pulumi.String("league"), Order: pulumi.String("ASCENDING")},
+			&firestore.IndexFieldArgs{FieldPath: pulumi.String("at"), Order: pulumi.String("DESCENDING")},
+		},
+	}); err != nil {
+		return err
+	}
+
 	// The worker writes the feed with its service account.
 	if _, err := projects.NewIAMMember(ctx, "worker-firestore", &projects.IAMMemberArgs{
 		Project: pulumi.String(s.project),

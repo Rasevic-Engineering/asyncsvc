@@ -41,6 +41,7 @@ type Config struct {
 	// Message lifecycle events for the admin Activity page; empty disables.
 	TopicActivity string
 	SubActivity   string
+	SubPlays      string // pull mode: live sports plays for the UI
 	// Admin commands for the ingester (StatsBomb replays).
 	TopicIngestCommands string
 	// Must match the emails subscription's max delivery attempts.
@@ -94,6 +95,7 @@ func Load() (Config, error) {
 		TopicEvents:              env("TOPIC_EVENTS", "events"),
 		TopicActivity:            env("TOPIC_ACTIVITY", "activity"),
 		SubActivity:              env("SUB_ACTIVITY", "activity-pull"),
+		SubPlays:                 env("SUB_PLAYS", "plays-pull"),
 		TopicIngestCommands:      env("TOPIC_INGEST_COMMANDS", "ingest-commands"),
 		EmailMaxAttempts:         5,
 		ReportsBucket:            os.Getenv("REPORTS_BUCKET"),

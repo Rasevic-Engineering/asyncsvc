@@ -75,7 +75,7 @@ type settings struct {
 	customDomain       string       // e.g. asyncsvc.example.com; Cloud Run only
 	github             githubDeploy // repository empty = no CI deploy access
 	ingesterEnabled    bool         // run the live sports ingester (1 instance, always on)
-	ingesterNHL        bool         // poll live NHL games (replays work either way)
+	ingesterLeagues    string       // live leagues to poll, e.g. "nhl,mlb,nba,nfl,soccer" ("none" = replays only)
 
 	// Auth.
 	adminEmails        string // comma-separated
@@ -189,13 +189,11 @@ func loadSettings(ctx *pulumi.Context) (settings, error) {
 	if st.customDomain != "" && st.platform != "cloudrun" {
 		return st, fmt.Errorf("asyncsvc:customDomain is only supported with platform=cloudrun (on GKE, use a Gateway with a managed certificate)")
 	}
-	st.ingesterEnabled, st.ingesterNHL = true, true
+	st.ingesterEnabled = true
 	if v, err := cfg.TryBool("ingesterEnabled"); err == nil {
 		st.ingesterEnabled = v
 	}
-	if v, err := cfg.TryBool("ingesterNhl"); err == nil {
-		st.ingesterNHL = v
-	}
+	st.ingesterLeagues = orDefault(cfg.Get("ingesterLeagues"), "nhl,mlb,nba,nfl,soccer")
 	if v, err := cfg.TryBool("publicApi"); err == nil {
 		st.publicAPI = v
 	}

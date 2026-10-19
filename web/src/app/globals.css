@@ -949,3 +949,142 @@ code {
 .attribution a {
   color: inherit;
 }
+
+/* ---- Per-sport panes ----------------------------------------------------- */
+
+.live-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.panes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pane-wide {
+  grid-column: 1 / -1;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.chip b {
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-live {
+  border-color: var(--info);
+}
+
+.chip-on,
+.chip-on:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.chip-status {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.chip-live .chip-status {
+  color: var(--info);
+}
+
+.stream {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 420px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.pane-wide .stream {
+  max-height: 640px;
+}
+
+.stream-item {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) 6ch;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+  animation: stream-in 0.4s ease-out;
+}
+
+@media (max-width: 560px) {
+  .stream-item {
+    grid-template-columns: minmax(0, 1fr) 6ch;
+  }
+
+  .stream-meta {
+    grid-column: 1 / -1;
+  }
+}
+
+.stream-scoring {
+  background: var(--success-bg);
+}
+
+.stream-scoring .stream-text {
+  font-weight: 600;
+}
+
+.stream-meta {
+  display: grid;
+  align-content: start;
+}
+
+.stream-game {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stream-time {
+  text-align: right;
+}
+
+.stream-empty {
+  padding: 12px 4px;
+  border-top: 1px solid var(--border);
+}
+
+@keyframes stream-in {
+  from {
+    background: var(--flash);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-item {
+    animation: none;
+  }
+}

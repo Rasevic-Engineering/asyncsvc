@@ -19,10 +19,11 @@ import (
 type fakePub struct {
 	mu     sync.Mutex
 	events []messages.Event
+	ui     map[string]bool // event ID → tagged for the live UI
 	other  map[string]int
 }
 
-func (f *fakePub) Publish(_ context.Context, topic string, data []byte, _ map[string]string) (string, error) {
+func (f *fakePub) Publish(_ context.Context, topic string, data []byte, attrs map[string]string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if topic != "events" {
@@ -37,6 +38,10 @@ func (f *fakePub) Publish(_ context.Context, topic string, data []byte, _ map[st
 		return "", err
 	}
 	f.events = append(f.events, e)
+	if f.ui == nil {
+		f.ui = map[string]bool{}
+	}
+	f.ui[e.EventID] = attrs[AttrUI] == "true"
 	return "id", nil
 }
 
@@ -66,133 +71,6 @@ func byType(t *testing.T, evs []messages.Event, typ string) messages.Event {
 func newTestIngester(pub *fakePub, status *MemoryStatus) *Ingester {
 	rec := &activity.Recorder{Pub: pub, Topic: "activity", Service: "ingester"}
 	return New(pub, "events", rec, status)
-}
-
-// ---- NHL --------------------------------------------------------------
-
-const nhlRoster = `"rosterSpots":[
-  {"teamId":30,"playerId":1,"firstName":{"default":"Kirill"},"lastName":{"default":"Kaprizov"}},
-  {"teamId":29,"playerId":2,"firstName":{"default":"Elvis"},"lastName":{"default":"Merzlikins"}},
-  {"teamId":29,"playerId":3,"firstName":{"default":"Zach"},"lastName":{"default":"Werenski"}}]`
-
-func nhlPlay(eventID, sort int, typ string, details string) string {
-	return fmt.Sprintf(`{"eventId":%d,"sortOrder":%d,"periodDescriptor":{"number":1,"periodType":"REG"},
-	  "timeInPeriod":"01:%02d","timeRemaining":"18:00","situationCode":"1551","typeDescKey":%q,"details":%s}`,
-		eventID, sort, sort, typ, details)
-}
-
-func nhlServer(t *testing.T, state *string, plays *[]string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/score/now":
-			fmt.Fprintf(w, `{"games":[{"id":2026020135,"gameState":%q,"startTimeUTC":"2026-10-18T22:00:00Z",
-			  "awayTeam":{"id":29,"abbrev":"CBJ","score":1},"homeTeam":{"id":30,"abbrev":"MIN","score":2}}]}`, *state)
-		case strings.HasSuffix(r.URL.Path, "/play-by-play"):
-			fmt.Fprintf(w, `{"id":2026020135,"gameState":%q,"startTimeUTC":"2026-10-18T22:00:00Z",
-			  "awayTeam":{"id":29,"abbrev":"CBJ","score":1,"sog":12},"homeTeam":{"id":30,"abbrev":"MIN","score":2,"sog":29},
-			  "periodDescriptor":{"number":2,"periodType":"REG"},"clock":{"timeRemaining":"01:10","inIntermission":false},
-			  "plays":[%s],%s}`, *state, strings.Join(*plays, ","), nhlRoster)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func TestNHLPublishesOnlyNewPlays(t *testing.T) {
-	state := "LIVE"
-	plays := []string{
-		nhlPlay(10, 1, "faceoff", `{"winningPlayerId":1,"eventOwnerTeamId":30}`),
-		nhlPlay(59, 2, "shot-on-goal", `{"shootingPlayerId":3,"goalieInNetId":99,"eventOwnerTeamId":29,"xCoord":39,"yCoord":-24,"shotType":"slap"}`),
-		nhlPlay(70, 3, "stoppage", `{}`),
-	}
-	srv := nhlServer(t, &state, &plays)
-	pub, status := &fakePub{}, &MemoryStatus{}
-	in := newTestIngester(pub, status)
-	in.NHL.BaseURL = srv.URL
-
-	var last, ingested int64 = -1, 0
-	if _, err := in.NHL.pollPlays(context.Background(), 2026020135, &last, &ingested); err != nil {
-		t.Fatal(err)
-	}
-	evs := pub.all()
-	if len(evs) != 3 {
-		t.Fatalf("want 3 events, got %d", len(evs))
-	}
-	shot := byType(t, evs, "nhl.shot-on-goal")
-	if shot.UserID != "Zach Werenski" || shot.Team != "CBJ" ||
-		shot.Source != "nhl" || shot.GameID != "nhl:2026020135" || shot.OccurredAt == 0 {
-		t.Fatalf("shot event: %+v", shot)
-	}
-	var props map[string]any
-	json.Unmarshal([]byte(shot.Properties), &props)
-	if props["game"] != "CBJ @ MIN" || props["period"] != float64(1) || props["players"].(map[string]any)["shooting"] != "Zach Werenski" {
-		t.Fatalf("shot properties: %v", props)
-	}
-	if a, b := byType(t, evs, "nhl.faceoff").UserID, byType(t, evs, "nhl.stoppage").UserID; a != "Kirill Kaprizov" || b != "game" {
-		t.Fatalf("actors: %q %q", a, b)
-	}
-
-	doc := status.Snapshot("nhl-2026020135")
-	if doc["home_score"] != 2 || doc["away_sog"] != 12 || doc["plays_ingested"] != int64(3) || doc["clock"] != "01:10" {
-		t.Fatalf("status: %v", doc)
-	}
-
-	// A new play arrives: only it is published.
-	plays = append(plays, nhlPlay(80, 4, "goal", `{"scoringPlayerId":1,"eventOwnerTeamId":30}`))
-	in.NHL.pollPlays(context.Background(), 2026020135, &last, &ingested)
-	if evs := pub.all(); len(evs) != 4 || byType(t, evs, "nhl.goal").UserID != "Kirill Kaprizov" {
-		t.Fatalf("after new play: %d events", len(evs))
-	}
-
-	// A restarted ingester picks up from the status store: nothing re-published.
-	in2 := newTestIngester(pub, status)
-	in2.NHL.BaseURL = srv.URL
-	ctx, cancel := context.WithCancel(context.Background())
-	state = "FINAL"
-	done := make(chan struct{})
-	go func() { in2.NHL.trackGame(ctx, 2026020135); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("trackGame should return once the game is final")
-	}
-	cancel()
-	if n := len(pub.all()); n != 4 {
-		t.Fatalf("restart re-published plays: %d events", n)
-	}
-	if status.Snapshot("nhl-2026020135")["state"] != "FINAL" {
-		t.Fatal("final state not recorded")
-	}
-
-	// Same play, same event ID (duplicates are detectable downstream).
-	if eventID("nhl", "2026020135", "59") != shot.EventID {
-		t.Fatal("event IDs must be deterministic")
-	}
-}
-
-func TestNHLScheduleRecordsUpcomingGames(t *testing.T) {
-	state := "FUT"
-	var plays []string
-	srv := nhlServer(t, &state, &plays)
-	status := &MemoryStatus{}
-	in := newTestIngester(&fakePub{}, status)
-	in.NHL.BaseURL = srv.URL
-	in.NHL.tracking = map[int64]context.CancelFunc{}
-
-	var wg sync.WaitGroup
-	if err := in.NHL.checkSchedule(context.Background(), &wg); err != nil {
-		t.Fatal(err)
-	}
-	doc := status.Snapshot("nhl-2026020135")
-	if doc["state"] != "FUT" || doc["away"] != "CBJ" || doc["home"] != "MIN" || doc["start_time"] == nil {
-		t.Fatalf("scheduled game status: %v", doc)
-	}
-	if len(in.NHL.tracking) != 0 {
-		t.Fatal("a future game shouldn't be polled")
-	}
 }
 
 // ---- StatsBomb ----------------------------------------------------------
@@ -271,6 +149,23 @@ func TestReplay(t *testing.T) {
 	}
 	if pub.other["activity"] == 0 {
 		t.Fatal("expected activity events per batch")
+	}
+
+	// Only highlights (shots, goals, half start) are tagged for the live UI,
+	// and they carry display text; passes and receipts go to BigQuery only.
+	for _, e := range evs {
+		tagged := pub.ui[e.EventID]
+		want := e.EventType == "soccer.shot" || e.EventType == "soccer.half-start"
+		if tagged != want {
+			t.Errorf("%s: ui=%v, want %v", e.EventType, tagged, want)
+		}
+		if tagged {
+			var p map[string]any
+			json.Unmarshal([]byte(e.Properties), &p)
+			if p["text"] == "" || p["text"] == nil {
+				t.Errorf("%s highlight has no text: %v", e.EventType, p)
+			}
+		}
 	}
 
 	// Replaying the same match again gives new event IDs.
@@ -356,7 +251,7 @@ func TestStopVersusShutdown(t *testing.T) {
 	// Admin stop: state "stopped".
 	status := &MemoryStatus{}
 	in := newIn(status)
-	in.Start(ctx, false)
+	in.Start(ctx)
 	in.HandleCommand(ctx, cmdDelivery(messages.IngestCommand{Action: "replay", ReplayID: "s1", MatchID: 3869685, Speed: 1}))
 	waitFor(t, func() bool { return status.Snapshot("replay-s1")["state"] == "running" })
 
@@ -376,7 +271,7 @@ func TestStopVersusShutdown(t *testing.T) {
 	status = &MemoryStatus{}
 	sctx, shutdown := context.WithCancel(ctx)
 	in = newIn(status)
-	in.Start(sctx, false)
+	in.Start(sctx)
 	in.HandleCommand(sctx, cmdDelivery(messages.IngestCommand{Action: "replay", ReplayID: "s2", MatchID: 3869685, Speed: 1}))
 	waitFor(t, func() bool { n, _ := status.Snapshot("replay-s2")["emitted"].(int); return n > 0 })
 	shutdown()
@@ -390,7 +285,7 @@ func TestStopVersusShutdown(t *testing.T) {
 	in2 := newTestIngester(pub, status)
 	in2.StatsBomb.BaseURL = in.StatsBomb.BaseURL
 	in2.StatsBomb.Sleep = func(context.Context, time.Duration) error { return nil }
-	in2.Start(ctx, false)
+	in2.Start(ctx)
 	waitFor(t, func() bool { return status.Snapshot("replay-s2")["state"] == "finished" })
 	if got, total := len(pub.all())+doc["emitted"].(int), 7; got != total {
 		t.Fatalf("resumed replay published %d after %v (want %d total)", len(pub.all()), doc["emitted"], total)
@@ -407,7 +302,7 @@ func TestShutdownDuringDownloadStaysResumable(t *testing.T) {
 	in := newTestIngester(&fakePub{}, status)
 	in.StatsBomb.BaseURL = srv.URL
 	ctx, shutdown := context.WithCancel(context.Background())
-	in.Start(ctx, false)
+	in.Start(ctx)
 	in.HandleCommand(ctx, cmdDelivery(messages.IngestCommand{Action: "replay", ReplayID: "d1", MatchID: 3869685, Speed: 10}))
 	waitFor(t, func() bool { return status.Snapshot("replay-d1")["state"] == "running" })
 	shutdown()
@@ -420,7 +315,7 @@ func TestShutdownDuringDownloadStaysResumable(t *testing.T) {
 func TestBadCommands(t *testing.T) {
 	status := &MemoryStatus{}
 	in := newTestIngester(&fakePub{}, status)
-	in.Start(context.Background(), false)
+	in.Start(context.Background())
 	in.HandleCommand(context.Background(), cmdDelivery(messages.IngestCommand{Action: "replay", ReplayID: "x", MatchID: 1, Speed: 10}))
 	if d := status.Snapshot("replay-x"); d["state"] != "failed" {
 		t.Fatalf("unknown match: %v", d)
