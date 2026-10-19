@@ -80,6 +80,11 @@ func (a *firebaseAuth) configureSignIn(ctx *pulumi.Context, s *shared, apiHosts 
 				Enabled:          pulumi.Bool(true),
 				PasswordRequired: pulumi.Bool(true),
 			},
+			// The API reports phone sign-in as disabled; stating it avoids a
+			// no-op diff on every deploy.
+			PhoneNumber: &identityplatform.ConfigSignInPhoneNumberArgs{
+				Enabled: pulumi.Bool(false),
+			},
 		},
 		AuthorizedDomains: domains,
 	}, pulumi.Provider(a.provider), pulumi.DependsOn([]pulumi.Resource{a.project}))
