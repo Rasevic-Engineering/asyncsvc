@@ -8,7 +8,7 @@
 //	GET  /v1/reports            caller's reports; admins may pass scope=all
 //	GET  /v1/reports/{id}       owner or admin (others get 404)
 //	POST /v1/events             admin only
-//	*    /v1/admin/replays...   admin only (StatsBomb replays)
+//	*    /v1/admin/replays...   admin only (StatsBomb replays: start, stop, delete)
 //	GET  /v1/me                 any user
 package api
 
@@ -98,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/admin/replays/catalog", admin(s.replayCatalog))
 	mux.HandleFunc("POST /v1/admin/replays", admin(s.startReplay))
 	mux.HandleFunc("POST /v1/admin/replays/{id}/stop", admin(s.stopReplay))
+	mux.HandleFunc("DELETE /v1/admin/replays/{id}", admin(s.deleteReplay))
 
 	if s.FirebaseHandlerHost != "" {
 		// Explicit methods: a method-less pattern would conflict with "GET /".
@@ -372,12 +373,23 @@ func (s *Server) startReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopReplay(w http.ResponseWriter, r *http.Request) {
+	s.replayCommand(w, r, "stop")
+}
+
+// deleteReplay asks the ingester to stop the replay (if running) and remove
+// it from the Live data page: its status card and highlight stream. Its
+// events stay in BigQuery, so reports still include it.
+func (s *Server) deleteReplay(w http.ResponseWriter, r *http.Request) {
+	s.replayCommand(w, r, "delete")
+}
+
+func (s *Server) replayCommand(w http.ResponseWriter, r *http.Request, action string) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "replay not found")
 		return
 	}
-	if !s.sendIngestCommand(w, r, messages.IngestCommand{Action: "stop", ReplayID: id.String()}) {
+	if !s.sendIngestCommand(w, r, messages.IngestCommand{Action: action, ReplayID: id.String()}) {
 		return
 	}
 	httpx.JSON(w, http.StatusAccepted, map[string]string{"replay_id": id.String()})

@@ -19,7 +19,7 @@ A separate **ingester** (`/bin/ingester`) streams real sports data into the same
 | **NBA** (ESPN) | Every play: shots, rebounds, fouls, turnovers, substitutions | Polled every 10s |
 | **NFL** (ESPN) | Every play, with down and distance | Polled every 15s |
 | **Soccer** (ESPN) | Live commentary events (shots, goals, cards, subs) for Premier League, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Champions League and Europa League | Polled every 30s |
-| **StatsBomb** ([open data](https://github.com/statsbomb/open-data)) | Every on-ball event of a famous match (passes, carries, shots with expected goals, fouls), replayed in its original timing at 1×–60× | Admin starts a replay on the **Live data** page → `POST /v1/admin/replays` → topic `ingest-commands` → ingester. Up to 3 at once; replays **resume after a restart** |
+| **StatsBomb** ([open data](https://github.com/statsbomb/open-data)) | Every on-ball event of a famous match (passes, carries, shots with expected goals, fouls), replayed in its original timing at 1×–60× | Admin starts a replay on the **Live data** page → `POST /v1/admin/replays` → topic `ingest-commands` → ingester. Up to 3 at once; replays **resume after a restart**. **Delete** removes a replay's card and highlights (stopping it first if running); its events stay in BigQuery |
 
 For every live league, the ingester checks the schedule every minute and polls each live game. Only new plays are published; each game's position is kept in Firestore, so restarts don't duplicate. Pick the leagues with `ingesterLeagues`.
 

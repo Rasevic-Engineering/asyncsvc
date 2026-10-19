@@ -168,7 +168,17 @@ function SportPane({
 }
 
 // The newest plays of one league, live from Firestore.
-function PlayStream({ league, filter, empty }: { league: string; filter: string | null; empty: string }) {
+function PlayStream({
+  league,
+  filter,
+  empty,
+  keep,
+}: {
+  league: string;
+  filter: string | null;
+  empty: string;
+  keep?: (p: PlayDoc) => boolean;
+}) {
   const [plays, setPlays] = useState<PlayDoc[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -186,7 +196,9 @@ function PlayStream({ league, filter, empty }: { league: string; filter: string 
     [league],
   );
 
-  const shown = (plays ?? []).filter((p) => !filter || p.game_id === filter).slice(0, 30);
+  const shown = (plays ?? [])
+    .filter((p) => (!filter || p.game_id === filter) && (!keep || keep(p)))
+    .slice(0, 30);
 
   if (error) return <p className="alert small">{error}</p>;
   if (plays === null) return <p className="muted small">Connecting…</p>;
@@ -217,6 +229,8 @@ function ReplayPanel({ replays, expanded, onExpand }: { replays: Replay[]; expan
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
+  // Deletes in flight: shown as "Deleting…" until the ingester removes the card.
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     api.replayCatalog().then(
@@ -256,6 +270,34 @@ function ReplayPanel({ replays, expanded, onExpand }: { replays: Replay[]; expan
       setError(err instanceof Error ? err.message : "Couldn't stop the replay.");
     }
   }
+
+  async function remove(r: Replay) {
+    const what = r.label ?? `match ${r.match_id}`;
+    const msg =
+      r.state === "running"
+        ? `Stop and delete the replay of ${what}? Its card and highlights are removed; its events stay in BigQuery.`
+        : `Delete the replay of ${what}? Its card and highlights are removed; its events stay in BigQuery.`;
+    if (!window.confirm(msg)) return;
+    setError(null);
+    setDeleting((d) => new Set(d).add(r.replay_id));
+    try {
+      await api.deleteReplay(r.replay_id);
+    } catch (err) {
+      setDeleting((d) => {
+        const next = new Set(d);
+        next.delete(r.replay_id);
+        return next;
+      });
+      setError(err instanceof Error ? err.message : "Couldn't delete the replay.");
+    }
+  }
+
+  // Highlights of deleted replays can still be in flight (or not yet
+  // removed): only show those of replays still listed.
+  const listed = useMemo(
+    () => new Set(replays.filter((r) => !deleting.has(r.replay_id)).map((r) => r.replay_id)),
+    [replays, deleting],
+  );
 
   const minutes = (m: ReplayMatch | undefined) => (m ? Math.round(100 / speed) : 0);
   const selected = catalog.find((m) => m.match_id === matchId);
@@ -331,15 +373,35 @@ function ReplayPanel({ replays, expanded, onExpand }: { replays: Replay[]; expan
                       {r.competition} · {r.speed}× · {r.requested_by} · {relativeTime(r.updated_at.toISOString())}
                     </div>
                   </div>
-                  <span className={`badge ${{ running: "kind-received", finished: "kind-acked", stopped: "", failed: "kind-dead_lettered" }[r.state]}`}>
-                    {r.state === "running" && <span className="spinner" aria-hidden />}
-                    {r.state[0].toUpperCase() + r.state.slice(1)}
-                  </span>
-                  {r.state === "running" && (
-                    <button onClick={() => stop(r.replay_id)} aria-label={`Stop replay of ${r.label}`}>
-                      Stop
-                    </button>
+                  {deleting.has(r.replay_id) ? (
+                    <span className="badge">
+                      <span className="spinner" aria-hidden /> Deleting…
+                    </span>
+                  ) : (
+                    <span className={`badge ${{ running: "kind-received", finished: "kind-acked", stopped: "", failed: "kind-dead_lettered" }[r.state]}`}>
+                      {r.state === "running" && <span className="spinner" aria-hidden />}
+                      {r.state[0].toUpperCase() + r.state.slice(1)}
+                    </span>
                   )}
+                  <div className="replay-actions">
+                    {r.state === "running" && (
+                      <button
+                        onClick={() => stop(r.replay_id)}
+                        disabled={deleting.has(r.replay_id)}
+                        aria-label={`Stop replay of ${r.label}`}
+                      >
+                        Stop
+                      </button>
+                    )}
+                    <button
+                      className="danger"
+                      onClick={() => remove(r)}
+                      disabled={deleting.has(r.replay_id)}
+                      aria-label={`Delete replay of ${r.label}`}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
                 <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
                   <div className="progress-bar" style={{ width: `${pct}%` }} />
@@ -358,7 +420,12 @@ function ReplayPanel({ replays, expanded, onExpand }: { replays: Replay[]; expan
           })}
         </ul>
       )}
-      <PlayStream league="statsbomb" filter={null} empty="Start a replay to see its highlights here." />
+      <PlayStream
+        league="statsbomb"
+        filter={null}
+        keep={(p) => !p.replay_id || listed.has(p.replay_id)}
+        empty="Start a replay to see its highlights here."
+      />
       <p className="muted small attribution">
         Soccer data: <a href="https://github.com/statsbomb/open-data" target="_blank" rel="noreferrer">StatsBomb open data</a>
         . Live data: NHL API, MLB Stats API, ESPN.

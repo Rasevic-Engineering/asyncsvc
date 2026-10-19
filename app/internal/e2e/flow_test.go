@@ -757,6 +757,14 @@ func TestReplayCommands(t *testing.T) {
 		t.Fatalf("stop command: %+v", c)
 	}
 
+	if resp, _ := e.call("DELETE", "/v1/admin/replays/"+started.ReplayID, "admin-token", ""); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	json.Unmarshal(e.one("ingest-commands").data, &c)
+	if c.Action != "delete" || c.ReplayID != started.ReplayID {
+		t.Fatalf("delete command: %+v", c)
+	}
+
 	for _, body := range []string{`{"match_id":1,"speed":10}`, `{"match_id":3869685,"speed":7}`, `nope`} {
 		if resp, _ := e.call("POST", "/v1/admin/replays", "admin-token", body); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: want 400, got %d", body, resp.StatusCode)
@@ -768,6 +776,7 @@ func TestReplayCommands(t *testing.T) {
 	// Admin only.
 	for _, c := range []struct{ method, path string }{
 		{"GET", "/v1/admin/replays/catalog"}, {"POST", "/v1/admin/replays"},
+		{"DELETE", "/v1/admin/replays/" + started.ReplayID},
 	} {
 		if resp, _ := e.call(c.method, c.path, "alice-token", `{"match_id":3869685,"speed":10}`); resp.StatusCode != http.StatusForbidden {
 			t.Errorf("non-admin %s %s: want 403, got %d", c.method, c.path, resp.StatusCode)

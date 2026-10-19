@@ -238,6 +238,44 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met")
 }
 
+func TestDeleteReplay(t *testing.T) {
+	ctx := context.Background()
+	status := &MemoryStatus{}
+	in := newTestIngester(&fakePub{}, status)
+	in.StatsBomb.BaseURL = sbServer(t).URL
+	in.StatsBomb.Sleep = func(ctx context.Context, _ time.Duration) error { <-ctx.Done(); return ctx.Err() }
+	in.Start(ctx)
+
+	// A running replay: stopped, and its document gone once the command
+	// returns (the replay's final "stopped" write happens before, not after).
+	in.HandleCommand(ctx, cmdDelivery(messages.IngestCommand{Action: "replay", ReplayID: "d1", MatchID: 3869685, Speed: 1}))
+	waitFor(t, func() bool { return status.Snapshot("replay-d1")["state"] == "running" })
+	if err := in.HandleCommand(ctx, cmdDelivery(messages.IngestCommand{Action: "delete", ReplayID: "d1"})); err != nil {
+		t.Fatal(err)
+	}
+	in.mu.Lock()
+	n := len(in.replays)
+	in.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d replays still running", n)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if d := status.Snapshot("replay-d1"); d != nil {
+		t.Fatalf("document re-created after delete: %v", d)
+	}
+
+	// A finished one (not running here), and one that doesn't exist.
+	status.Merge(ctx, "replay-d2", map[string]any{"kind": "statsbomb", "replay_id": "d2", "state": "finished"})
+	for _, id := range []string{"d2", "missing"} {
+		if err := in.HandleCommand(ctx, cmdDelivery(messages.IngestCommand{Action: "delete", ReplayID: id})); err != nil {
+			t.Fatal(id, err)
+		}
+	}
+	if d := status.Snapshot("replay-d2"); d != nil {
+		t.Fatalf("finished replay not deleted: %v", d)
+	}
+}
+
 func TestStopVersusShutdown(t *testing.T) {
 	newIn := func(status *MemoryStatus) *Ingester {
 		in := newTestIngester(&fakePub{}, status)

@@ -111,7 +111,7 @@ In the app, the **Live data** page shows "No games live" with no card updates, a
 |---|---|
 | **Replays already running** | Paused, not lost. On shutdown each replay saves its position and stays `running`; when the ingester comes back it **resumes from where it stopped** |
 | **New replay requests** | Accepted by the API and **queued** in the `ingest-commands-pull` subscription (kept up to 7 days). They start when the ingester is back on |
-| **Stop requests** | Also queued; applied when it's back on |
+| **Stop and delete requests** | Also queued; applied when it's back on (until then, a deleted replay shows "Deleting…") |
 | **Live games** | Not polled. When the ingester comes back **during** a game, it catches up on that game's plays since the last one ingested. Those plays get the time they were ingested, not when they happened. Games that **start and finish** while it's off are skipped |
 | **Everything else** | Unaffected: API, worker, reports, emails, Activity feed, and `POST /v1/events` |
 

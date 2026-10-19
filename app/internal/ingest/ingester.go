@@ -16,6 +16,13 @@ import (
 // MaxReplays is how many replays may run at once.
 const MaxReplays = 3
 
+// running is a replay in progress: cancel stops it, done closes once it has
+// returned (and written its final status).
+type running struct {
+	cancel context.CancelCauseFunc
+	done   chan struct{}
+}
+
 // Ingester runs the live league tracker and handles replay commands.
 type Ingester struct {
 	Tracker   *Tracker
@@ -23,7 +30,7 @@ type Ingester struct {
 	Status    StatusStore
 
 	mu      sync.Mutex
-	replays map[string]context.CancelCauseFunc
+	replays map[string]*running
 	wg      sync.WaitGroup
 	ctx     context.Context
 }
@@ -36,7 +43,7 @@ func New(pub Publisher, eventsTopic string, rec *activity.Recorder, status Statu
 		Tracker:   &Tracker{sink: sk, status: status},
 		StatsBomb: &StatsBomb{sink: sk, status: status},
 		Status:    status,
-		replays:   map[string]context.CancelCauseFunc{},
+		replays:   map[string]*running{},
 	}
 }
 
@@ -105,10 +112,10 @@ func (in *Ingester) HandleCommand(ctx context.Context, d pubsubx.Delivery) error
 
 	case "stop":
 		in.mu.Lock()
-		cancel, ok := in.replays[cmd.ReplayID]
+		r, ok := in.replays[cmd.ReplayID]
 		in.mu.Unlock()
 		if ok {
-			cancel(ErrStopped) // the replay records "stopped" itself
+			r.cancel(ErrStopped) // the replay records "stopped" itself
 			return nil
 		}
 		// Not running here (already finished, or lost): just mark it.
@@ -120,6 +127,26 @@ func (in *Ingester) HandleCommand(ctx context.Context, d pubsubx.Delivery) error
 			return in.Status.Merge(ctx, doc, map[string]any{"state": "stopped"})
 		}
 		return nil
+
+	case "delete":
+		// Stop it first if it's running here, and wait until it has written
+		// its last status, so nothing re-creates the document afterwards.
+		in.mu.Lock()
+		r, ok := in.replays[cmd.ReplayID]
+		in.mu.Unlock()
+		if ok {
+			r.cancel(ErrStopped)
+			select {
+			case <-r.done:
+			case <-ctx.Done():
+				return ctx.Err() // retried
+			}
+		}
+		if err := in.Status.DeleteReplay(ctx, cmd.ReplayID); err != nil {
+			return err
+		}
+		slog.InfoContext(ctx, "replay deleted", "replay_id", cmd.ReplayID)
+		return nil
 	}
 	slog.WarnContext(ctx, "unknown ingest command; dropping", "action", cmd.Action)
 	return nil
@@ -127,13 +154,15 @@ func (in *Ingester) HandleCommand(ctx context.Context, d pubsubx.Delivery) error
 
 func (in *Ingester) startReplay(cmd messages.IngestCommand, from int) {
 	rctx, cancel := context.WithCancelCause(in.ctx)
+	r := &running{cancel: cancel, done: make(chan struct{})}
 	in.mu.Lock()
-	in.replays[cmd.ReplayID] = cancel
+	in.replays[cmd.ReplayID] = r
 	in.mu.Unlock()
 
 	in.wg.Add(1)
 	go func() {
 		defer in.wg.Done()
+		defer close(r.done)
 		defer func() {
 			cancel(nil)
 			in.mu.Lock()

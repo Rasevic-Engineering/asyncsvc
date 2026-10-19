@@ -115,6 +115,9 @@ export const api = {
 
   stopReplay: (id: string) => request<{ replay_id: string }>(`/v1/admin/replays/${id}/stop`, { method: "POST" }),
 
+  // Stops it if running, and removes its card and highlights. Its events stay in BigQuery.
+  deleteReplay: (id: string) => request<{ replay_id: string }>(`/v1/admin/replays/${id}`, { method: "DELETE" }),
+
   sendEvents: (events: NewEvent[]) =>
     request<{ accepted: number; event_ids: string[] }>("/v1/events", {
       method: "POST",

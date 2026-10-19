@@ -21,6 +21,8 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/example/asyncsvc/internal/playfeed"
 )
 
 // StatusCollection is the Firestore collection with one document per
@@ -37,6 +39,9 @@ type StatusStore interface {
 	Get(ctx context.Context, id string) (map[string]any, bool, error)
 	// RunningReplays returns the status of replays left in state "running".
 	RunningReplays(ctx context.Context) ([]map[string]any, error)
+	// DeleteReplay removes a replay's status document and its highlight
+	// plays (the UI's copy). Its events stay in BigQuery.
+	DeleteReplay(ctx context.Context, replayID string) error
 }
 
 func withTimes(fields map[string]any) map[string]any {
@@ -85,6 +90,30 @@ func (f *FirestoreStatus) RunningReplays(ctx context.Context) ([]map[string]any,
 	}
 }
 
+func (f *FirestoreStatus) DeleteReplay(ctx context.Context, replayID string) error {
+	bw := f.Client.BulkWriter(ctx)
+	it := f.Client.Collection(playfeed.Collection).Where("replay_id", "==", replayID).Documents(ctx)
+	defer it.Stop()
+	for {
+		snap, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			bw.End()
+			return err
+		}
+		if _, err := bw.Delete(snap.Ref); err != nil {
+			bw.End()
+			return err
+		}
+	}
+	bw.End()
+	// Deleting a missing document is not an error.
+	_, err := f.Client.Collection(StatusCollection).Doc(replayDocID(replayID)).Delete(ctx)
+	return err
+}
+
 // MemoryStatus is an in-memory StatusStore for tests.
 type MemoryStatus struct {
 	mu   sync.Mutex
@@ -123,6 +152,13 @@ func (m *MemoryStatus) RunningReplays(context.Context) ([]map[string]any, error)
 		}
 	}
 	return out, nil
+}
+
+func (m *MemoryStatus) DeleteReplay(_ context.Context, replayID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Docs, replayDocID(replayID))
+	return nil
 }
 
 // Snapshot returns a copy of a document (tests).
